@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Alarms -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Notifications and alarm screen -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <!-- Reschedule after reboot / time changes -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Battery optimisation exemption prompt -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!--
+      No INTERNET permission: all data stays on the device (spec section 18).
+    -->
+
+    <application
+        android:name=".App"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AdhdRoutineApp"
+        tools:targetApi="35">
+
+        <!--
+          `singleTop` so that bringing the app to the front during a run (from
+          UserPresentReceiver or the ongoing notification) delivers the intent
+          to the existing instance via onNewIntent instead of stacking a second
+          copy of the activity.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AdhdRoutineApp">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          Full-screen alarm screen (spec section 15.9). Launched over the lock
+          screen by the alarm's full-screen intent; excluded from recents so it
+          does not linger after dismissal.
+        -->
+        <activity
+            android:name=".alarm.AlarmActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.AdhdRoutineApp" />
+
+        <!--
+          Accountability lock-screen takeover (plans/accountability-lockscreen.md).
+          Launched over the keyguard by the ongoing run notification's
+          full-screen intent, so turning the screen on during a run shows the
+          routine instead of the normal lock screen. Dismissable: the user can
+          swipe or tap Dismiss to reveal the lock screen. Excluded from recents
+          so it does not linger.
+        -->
+        <activity
+            android:name=".alarm.RunTakeoverActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.AdhdRoutineApp" />
+
+        <!--
+          UserPresentReceiver is registered at runtime in App.onCreate rather
+          than here: it needs ACTION_SCREEN_ON, which the platform does not
+          deliver to manifest-declared receivers. Registering it here as well
+          would create a second instance and fire the takeover twice.
+        -->
+
+        <!--
+          Fires the alarm notification and schedules the next occurrence
+          (spec section 9).
+        -->
+        <receiver
+            android:name=".alarm.AlarmReceiver"
+            android:exported="false" />
+
+        <!--
+          Lock-screen / home-screen widget showing the current task and the
+          time left on it. Refreshed by RunWidgetUpdater at every task boundary
+          and by the periodic update period in run_widget_info.xml.
+        -->
+        <receiver
+            android:name=".widget.RunWidgetReceiver"
+            android:exported="false"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/run_widget_info" />
+        </receiver>
+
+        <!--
+          Rebuilds every alarm after reboot or a clock/timezone change
+          (spec section 9).
+        -->
+        <receiver
+            android:name=".alarm.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

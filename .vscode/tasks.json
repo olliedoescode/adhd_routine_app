@@ -1,0 +1,91 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Android: Build debug APK",
+      "type": "shell",
+      "command": "./deploy.sh --build",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Android: Deploy to phone",
+      "type": "shell",
+      "command": "./deploy.sh",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Android: Deploy + logs",
+      "type": "shell",
+      "command": "./deploy.sh --logs",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Android: Reconnect wireless + deploy",
+      "type": "shell",
+      "command": "./deploy.sh --wireless",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Android: Pair wireless debugging",
+      "type": "shell",
+      "command": "./pair-wireless.sh",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "Android: Run unit tests",
+      "type": "shell",
+      "command": "./gradlew :app:testDebugUnitTest --console=plain",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Android: Clean build",
+      "type": "shell",
+      "command": "./gradlew clean --console=plain",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "Android: Clear stale build lock",
+      "type": "shell",
+      "command": "./deploy.sh --unlock",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    }
+  ]
+}

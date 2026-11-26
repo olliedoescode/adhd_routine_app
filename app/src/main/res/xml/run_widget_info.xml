@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Home-screen widget showing the current task and time left.
+
+  This is a home-screen widget only. Samsung One UI 5+ (Android 13+) removed
+  third-party lock-screen widgets, so the `keyguard` category is ignored there.
+  The lock-screen "now playing" card is the ongoing media-style notification
+  instead (plans/lockscreen-media-card.md), not this widget.
+
+  `updatePeriodMillis` is the platform's floor (30 minutes); the widget is also
+  refreshed immediately by RunWidgetUpdater at every task boundary, start,
+  finish and stop, so the coarse period only matters while the app is closed.
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="80dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="1800000"
+    android:initialLayout="@layout/glance_default_loading_layout"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:description="@string/run_widget_description" />
