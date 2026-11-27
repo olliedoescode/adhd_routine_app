@@ -28,6 +28,36 @@ import javax.inject.Singleton
  * preferences and a second DataStore would mean a second file and a second
  * singleton for no gain.
  */
+/**
+ * The shape of the buzz the alarm uses when it fires.
+ *
+ * Strength (how hard) and pattern (what rhythm) are separate on purpose: some
+ * people want a single unbroken buzz they cannot sleep through, others want a
+ * pulsing rhythm that is harder to ignore than a flat tone, and some prefer the
+ * classic "heartbeat" double-thump. All are played at the user's chosen
+ * [AlarmSettings.alarmVibrationStrength].
+ */
+enum class VibrationPattern {
+    /** One continuous, unbroken buzz — the default, hardest to sleep through. */
+    Solid,
+
+    /** A steady on/off pulse, like a ringing phone. */
+    Pulse,
+
+    /** A "heartbeat" double-thump followed by a pause, repeated. */
+    Heartbeat,
+
+    /** A rising ramp of short buzzes that gets more insistent. */
+    Escalating,
+    ;
+
+    companion object {
+        /** Maps a stored name back to a pattern, defaulting to [Solid]. */
+        fun fromName(name: String?): VibrationPattern =
+            entries.firstOrNull { it.name == name } ?: Solid
+    }
+}
+
 data class AlarmSettings(
     /**
      * The tone to ring, as a content `Uri` string. `null` means "whatever the
@@ -51,6 +81,12 @@ data class AlarmSettings(
      * the hardware allows.
      */
     val alarmVibrationStrength: Float = DEFAULT_ALARM_VIBRATION_STRENGTH,
+    /**
+     * The rhythm of the alarm's buzz. [VibrationPattern.Solid] is the default
+     * (one unbroken buzz); the others trade that for a pulse, a heartbeat or an
+     * escalating ramp. Played at [alarmVibrationStrength].
+     */
+    val vibrationPattern: VibrationPattern = VibrationPattern.Solid,
     /**
      * How hard the phone buzzes for a **task boundary or run start** — the
      * short buzz when a task changes and the buzz when a run begins. Kept
@@ -129,6 +165,7 @@ class AlarmSettingsStore @Inject constructor(
             vibrate = prefs[KEY_VIBRATE] ?: true,
             alarmVibrationStrength = (prefs[KEY_ALARM_VIBRATION] ?: AlarmSettings.DEFAULT_ALARM_VIBRATION_STRENGTH)
                 .coerceIn(AlarmSettings.MIN_VIBRATION_STRENGTH, AlarmSettings.MAX_VIBRATION_STRENGTH),
+            vibrationPattern = VibrationPattern.fromName(prefs[KEY_VIBRATION_PATTERN]),
             taskVibrationStrength = (prefs[KEY_TASK_VIBRATION] ?: AlarmSettings.DEFAULT_TASK_VIBRATION_STRENGTH)
                 .coerceIn(AlarmSettings.MIN_VIBRATION_STRENGTH, AlarmSettings.MAX_VIBRATION_STRENGTH),
             durationSeconds = (prefs[KEY_DURATION] ?: AlarmSettings.DEFAULT_DURATION_SECONDS)
@@ -162,6 +199,11 @@ class AlarmSettingsStore @Inject constructor(
 
     suspend fun setVibrate(enabled: Boolean) {
         dataStore.edit { prefs -> prefs[KEY_VIBRATE] = enabled }
+    }
+
+    /** Sets the rhythm of the alarm's buzz. */
+    suspend fun setVibrationPattern(pattern: VibrationPattern) {
+        dataStore.edit { prefs -> prefs[KEY_VIBRATION_PATTERN] = pattern.name }
     }
 
     /** Sets how hard a task alarm buzzes, 0f..1f. */
@@ -208,6 +250,7 @@ class AlarmSettingsStore @Inject constructor(
         val KEY_TONE_NAME = stringPreferencesKey("alarm_tone_name")
         val KEY_VOLUME = floatPreferencesKey("alarm_volume")
         val KEY_VIBRATE = booleanPreferencesKey("alarm_vibrate")
+        val KEY_VIBRATION_PATTERN = stringPreferencesKey("alarm_vibration_pattern")
         val KEY_ALARM_VIBRATION = floatPreferencesKey("alarm_vibration_strength")
         val KEY_TASK_VIBRATION = floatPreferencesKey("task_vibration_strength")
         val KEY_DURATION = intPreferencesKey("alarm_duration_seconds")

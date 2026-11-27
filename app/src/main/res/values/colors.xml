@@ -1,11 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Visual tokens from spec section 15.11 -->
-    <color name="background">#0E0F12</color>
-    <color name="surface">#16181D</color>
-    <color name="grid_line">#2A2D33</color>
-    <color name="text_primary">#E8EAED</color>
-    <color name="text_secondary">#9AA0A6</color>
-    <color name="countdown_red">#FF3B30</color>
-    <color name="selection_outline">#FFFFFF</color>
+    <!-- Visual tokens from spec section 15.11, warmed to match ui/theme/Color.kt.
+         These drive the pre-Compose launch window, so they must match the
+         Compose Background or the app flashes a cold colour on start. -->
+    <color name="background">#14110F</color>
+    <color name="surface">#1E1A17</color>
+    <color name="grid_line">#332C26</color>
+    <color name="text_primary">#F2EBE3</color>
+    <color name="text_secondary">#A89C8F</color>
+    <color name="countdown_red">#FF5A4D</color>
+    <color name="selection_outline">#FFF3E4</color>
+
+    <!-- The launcher icon's background. The family artwork supplied as
+         images/1-baby-with-adult-app-icon.png is transparent, so it is drawn
+         over this solid green. #2F5038 is the green chosen for the icon. -->
+    <color name="launcher_background">#2F5038</color>
 </resources>

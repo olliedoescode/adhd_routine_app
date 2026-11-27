@@ -20,6 +20,11 @@ package com.adhd.routineplanner.domain
  *
  * [alarmEnabled] is per task, not per routine: any subset of the tasks may wake
  * the user, and it is not tied to the first one.
+ *
+ * [icon] is the stock-task icon key the task was created from (for example
+ * [IconKeys.SHOWER]), or [IconKeys.TASK] for a task the user typed by hand. It
+ * is carried through to the run screen and the ongoing notification so a task
+ * keeps its icon once it is running.
  */
 data class PlacedTask(
     val id: Long = 0,
@@ -29,6 +34,7 @@ data class PlacedTask(
     val name: String = DEFAULT_NAME,
     val color: Int = DEFAULT_COLOR,
     val alarmEnabled: Boolean = false,
+    val icon: String = IconKeys.TASK,
 ) {
     companion object {
         /** Fallback label for a task whose name was somehow left blank. */

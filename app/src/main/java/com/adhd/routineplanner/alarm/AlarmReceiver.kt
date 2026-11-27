@@ -10,6 +10,7 @@ import android.util.Log
 import com.adhd.routineplanner.data.AlarmSettings
 import com.adhd.routineplanner.data.AlarmSettingsStore
 import com.adhd.routineplanner.data.RoutineRepository
+import com.adhd.routineplanner.data.RunSessionStore
 import com.adhd.routineplanner.domain.Routine
 import com.adhd.routineplanner.domain.RoutineDates
 import dagger.hilt.android.AndroidEntryPoint
@@ -47,6 +48,9 @@ class AlarmReceiver : BroadcastReceiver() {
 
     @Inject
     lateinit var alarmSettingsStore: AlarmSettingsStore
+
+    @Inject
+    lateinit var runSessionStore: RunSessionStore
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == ACTION_DISMISS_TEST) {
@@ -116,6 +120,39 @@ class AlarmReceiver : BroadcastReceiver() {
         // remaining tasks; rescheduling the recurring schedule mid-run would
         // register tomorrow's alarms on top of them. The recurring schedule is
         // rebuilt when the run stops or when the routine is next edited.
+        //
+        // *Do* re-arm the remaining in-run alarms, though. This is the
+        // self-healing step that makes alarms reliable: if a previous alarm was
+        // dropped (Doze, an inexact fallback firing late, the process being
+        // killed, or the phone being off at the trigger time), the remaining
+        // tasks would otherwise never fire for the rest of the run. Re-running
+        // scheduleRunAlarms from the live session start re-registers every
+        // still-future task alarm, so one missed alarm no longer breaks the run.
+        rearmRunAlarms(context, routineId, taskIndex + 1)
+    }
+
+    /**
+     * Re-registers the in-run task alarms from the live session start.
+     *
+     * Only does anything while a run is actually active for [routineId]: the
+     * session start is the anchor the in-run alarms are computed from, and
+     * without it there is nothing to re-arm. [AlarmManagerScheduler.scheduleRunAlarms]
+     * already skips tasks whose start is in the past, so re-running it is safe
+     * and idempotent — it simply refreshes the alarms for the tasks still to
+     * come.
+     */
+    private suspend fun rearmRunAlarms(
+        context: Context,
+        routineId: Long,
+        firstTaskIndex: Int,
+    ) {
+        val session = runSessionStore.session.firstOrNull() ?: return
+        if (session.routineId != routineId) return
+        // Start the re-arm *after* the task that just fired. Re-registering that
+        // task would pull its past trigger forward to `now + 3s` (the grace
+        // window in scheduleRunAlarms) and make it ring again immediately — the
+        // "audio and vibration repeat every 3 seconds" bug.
+        scheduler.scheduleRunAlarms(routineId, session.startMs, firstTaskIndex)
     }
 
     /**

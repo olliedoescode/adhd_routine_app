@@ -1,4 +1,7 @@
-package com.adhd.routineplanner.ui.plan
+package com.adhd.routineplanner.ui.plan.archive
+
+// ARCHIVED with the edit-mode grid: continuous drag-resize was driven by the
+// grid's resize strip. The timeline changes duration from the task editor.
 
 import com.adhd.routineplanner.domain.Durations
 import kotlin.math.abs

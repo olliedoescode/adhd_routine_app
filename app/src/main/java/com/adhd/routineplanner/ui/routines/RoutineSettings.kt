@@ -22,8 +22,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
@@ -52,6 +50,8 @@ import androidx.compose.ui.unit.sp
 import com.adhd.routineplanner.domain.DaysOfWeek
 import com.adhd.routineplanner.domain.Routine
 import com.adhd.routineplanner.domain.RoutineDates
+import com.adhd.routineplanner.domain.TimeWindow
+import com.adhd.routineplanner.ui.common.AppSwitch
 import com.adhd.routineplanner.ui.theme.AdhdRoutineAppTheme
 import com.adhd.routineplanner.ui.theme.Background
 import com.adhd.routineplanner.ui.theme.Surface
@@ -64,10 +64,14 @@ import java.time.ZoneOffset
 /**
  * Routine settings bottom sheet (spec §15.7).
  *
- * Name, start time, end time (both Material 3 time pickers), active days (seven
- * toggles) and an enabled switch. The start and end times define the routine's
- * fixed window; the tasks are stretched to fill it, so the window length is the
- * number the user is really choosing.
+ * Name, start time, end time (both the stock Material 3 [TimePicker]), active
+ * days (seven toggles) and an enabled switch. The start and end times define the
+ * routine's fixed window; the tasks are stretched to fill it, so the window
+ * length is the number the user is really choosing.
+ *
+ * Changing the window never deletes a task. Task start and end times are not
+ * stored — they are derived from the window, the task order and each task's
+ * duration — so moving the window automatically moves every task with it.
  *
  * Alarms are per task now, so there is no routine-level alarm mode here — the
  * bell on each task in the plan screen decides what wakes you up.
@@ -77,6 +81,8 @@ import java.time.ZoneOffset
  * the repository, which reschedules alarms.
  *
  * @param routine the routine to edit.
+ * @param taskMinutes the durations of the routine's tasks, used to decide
+ *   whether a shorter window can still hold them. Defaults to empty.
  * @param onSave called with the edited routine when the user confirms.
  * @param onDismiss called when the sheet closes without saving.
  */
@@ -86,6 +92,7 @@ fun RoutineSettingsSheet(
     routine: Routine,
     onSave: (Routine) -> Unit,
     onDismiss: () -> Unit,
+    taskMinutes: List<Int> = emptyList(),
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
@@ -96,6 +103,7 @@ fun RoutineSettingsSheet(
     ) {
         RoutineSettingsContent(
             initial = routine,
+            taskMinutes = taskMinutes,
             onSave = onSave,
             onCancel = onDismiss,
         )
@@ -106,9 +114,11 @@ fun RoutineSettingsSheet(
 @Composable
 private fun RoutineSettingsContent(
     initial: Routine,
+    taskMinutes: List<Int>,
     onSave: (Routine) -> Unit,
     onCancel: () -> Unit,
 ) {
+    val taskCount = taskMinutes.size
     val haptics = LocalHapticFeedback.current
     var name by remember { mutableStateOf(initial.name) }
     var startMinute by remember { mutableIntStateOf(initial.startMinuteOfDay) }
@@ -121,13 +131,112 @@ private fun RoutineSettingsContent(
     // runs on that single day and then disables itself.
     var oneOffDate by remember { mutableStateOf<LocalDate?>(RoutineDates.dateOf(initial)) }
     var datePickerOpen by remember { mutableStateOf(false) }
+    // Untimed routines keep their length in [untimedMinutes]; the timed fields
+    // below are simply ignored while [untimed] is true.
+    var untimed by remember { mutableStateOf(initial.isUntimed) }
+    var untimedMinutes by remember { mutableIntStateOf(initial.untimedDurationMinutes) }
+    var allowPause by remember { mutableStateOf(initial.allowPause) }
+
+    // Set when a shorter window would not fit the existing tasks. Holds the
+    // pending (start, end) so the user can confirm the trim. Tasks are never
+    // deleted by a time change.
+    var pendingShrink by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    // Same idea for an untimed routine, whose "window" is a single length.
+    var pendingUntimedShrink by remember { mutableStateOf<Int?>(null) }
+    // Set when the window cannot hold every task at all (each needs >= 1 min).
+    var tooManyTasks by remember { mutableStateOf(false) }
 
     val nameValid = name.trim().isNotEmpty()
-    // The window length is what the user is really choosing, so show it live.
-    val capacity = initial.copy(
-        startMinuteOfDay = startMinute,
-        endMinuteOfDay = endMinute,
-    ).capacityMinutes
+    // An untimed routine has no clock window: its "end" field stores the total
+    // length, so the same capacity number drives both modes.
+    val capacity = if (untimed) untimedMinutes else TimeWindow.capacity(startMinute, endMinute)
+
+    /**
+     * Applies a new start time. The end is pushed forward so it is never before
+     * the start, and a window too short for the tasks is refused.
+     */
+    fun applyStart(picked: Int) {
+        val newEnd = TimeWindow.endAfterStartMoved(
+            start = picked,
+            currentEnd = endMinute,
+            taskMinutes = taskMinutes,
+        )
+        val newCapacity = TimeWindow.capacity(picked, newEnd)
+        if (!TimeWindow.canHoldTasks(newCapacity, taskCount)) {
+            tooManyTasks = true
+            return
+        }
+        startMinute = picked
+        endMinute = newEnd
+    }
+
+    /**
+     * Applies a new end time, asking for confirmation before trimming tasks if
+     * the window would be shorter than they need.
+     */
+    fun applyEnd(picked: Int) {
+        val newCapacity = TimeWindow.capacity(startMinute, picked)
+        if (!TimeWindow.canHoldTasks(newCapacity, taskCount)) {
+            tooManyTasks = true
+            return
+        }
+        if (newCapacity < taskMinutes.sum()) {
+            pendingShrink = startMinute to picked
+        } else {
+            endMinute = picked
+        }
+    }
+
+    /**
+     * Writes the edited routine back. [windowStart] and [windowEnd] are the timed
+     * clock window; [length] is the total for an untimed routine. Only the fields
+     * that belong to the current mode are read, so callers may pass the stored
+     * values for the unused mode.
+     *
+     * Set in one place so the Save button and both shrink confirmations can
+     * never drift apart — in particular so the untimed flag is always written.
+     */
+    fun saveRoutine(windowStart: Int, windowEnd: Int, length: Int) {
+        onSave(
+            initial.copy(
+                name = name.trim(),
+                startMinuteOfDay = if (untimed) 0 else windowStart,
+                endMinuteOfDay = if (untimed) length.coerceAtLeast(1) else windowEnd,
+                // A one-off has no weekly days; a recurring routine has no date.
+                // An untimed routine has neither.
+                daysOfWeek = if (untimed || oneOffDate != null) DaysOfWeek.NONE else days,
+                scheduledDate = if (untimed) null else RoutineDates.store(oneOffDate),
+                enabled = enabled,
+                useBuffer = useBuffer,
+                allowPause = allowPause,
+                isUntimed = untimed,
+            ),
+        )
+    }
+
+    /**
+     * Explains what a shorter window costs, in the user's terms: how many tasks
+     * get trimmed and by how many minutes in total, that spare time (the buffer)
+     * is always used up before any task is touched, and that the trim is spread
+     * so long tasks give up the most while very short ones barely move.
+     *
+     * @param capacity the window length the user is about to save.
+     */
+    fun shrinkExplanation(capacity: Int): String {
+        val needed = taskMinutes.sum()
+        val trimmed = TimeWindow.shrinkToFit(taskMinutes, capacity)
+        val shorterCount = taskMinutes.indices.count { trimmed[it] < taskMinutes[it] }
+        val removed = needed - trimmed.sum()
+        val cost = if (shorterCount == 1) {
+            "1 task will be shortened by $removed min."
+        } else {
+            "$shorterCount of your ${taskMinutes.size} tasks will be shortened by " +
+                "$removed min in total."
+        }
+        return "Any spare time in the window goes first. This window is $capacity min " +
+            "but your tasks need $needed min, so $cost Long tasks lose the most; " +
+            "quick ones like brushing teeth barely change."
+    }
 
     Column(
         modifier = Modifier
@@ -169,115 +278,192 @@ private fun RoutineSettingsContent(
 
         Spacer(Modifier.height(16.dp))
 
-        // --- Window: start and end ----------------------------------------
+        // --- Anytime (untimed) --------------------------------------------
+        // An untimed routine drops the clock entirely: no start time, no day,
+        // no date — just a length you start from the Run button on its card.
+        // Toggling preserves the current length in either direction.
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "Start time",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary,
-                )
-                Spacer(Modifier.height(4.dp))
-                TimeFieldBox(
-                    label = formatMinuteOfDay(startMinute),
-                    onClick = { pickerTarget = TimeField.Start },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "End time",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextSecondary,
-                )
-                Spacer(Modifier.height(4.dp))
-                TimeFieldBox(
-                    label = formatMinuteOfDay(endMinute),
-                    onClick = { pickerTarget = TimeField.End },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = "$capacity min window",
-            style = MaterialTheme.typography.bodySmall,
-            color = TextSecondary,
-        )
-
-        Spacer(Modifier.height(16.dp))
-
-        // --- Date ---------------------------------------------------------
-        // A date makes the routine a one-off. Picking a weekday below clears it
-        // again, so the two ways of scheduling can never both be set.
-        Text("Date", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-        Spacer(Modifier.height(4.dp))
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Background, RoundedCornerShape(8.dp))
-                .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = oneOffDate?.let { RoutineDates.oneOffLabel(it) } ?: "Repeats weekly",
+                    text = "Anytime routine",
                     style = MaterialTheme.typography.bodyLarge,
                     color = TextPrimary,
                 )
                 Text(
-                    text = if (oneOffDate == null) {
-                        "Runs on the days selected below"
+                    text = if (untimed) {
+                        "No start time — run it whenever you like"
                     } else {
-                        "One-off: runs once, then turns itself off"
+                        "Has a fixed start time and days"
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                 )
             }
-            IconButton(onClick = { datePickerOpen = true }) {
-                Icon(
-                    imageVector = Icons.Filled.CalendarMonth,
-                    contentDescription = "Pick a one-off date",
-                    tint = TextPrimary,
-                )
-            }
+            AppSwitch(
+                checked = untimed,
+                onCheckedChange = { on ->
+                    if (on) {
+                        // Same clamp the creation wizard and the picker use, so a
+                        // routine can never store a length outside 1..1439.
+                        untimedMinutes = capacity.coerceIn(1, 24 * 60 - 1)
+                    } else {
+                        endMinute = (startMinute + untimedMinutes) % (24 * 60)
+                    }
+                    untimed = on
+                },
+            )
         }
 
         Spacer(Modifier.height(16.dp))
 
-        // --- Active days --------------------------------------------------
-        Text("Active days", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-        Spacer(Modifier.height(8.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            DaysOfWeek.LETTER_LABELS.forEachIndexed { index, label ->
-                val bit = 1 shl index
-                val active = oneOffDate == null && (days and bit) != 0
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(40.dp)
-                        .clip(CircleShape)
-                        .background(if (active) TextPrimary else Background)
-                        .clickable {
-                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                            // Choosing a weekday makes the routine recurring.
-                            oneOffDate = null
-                            days = days xor bit
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
+        // --- Window: start and end (timed) or total length (untimed) ------
+        if (untimed) {
+            Text(
+                "Length",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(4.dp))
+            TimeFieldBox(
+                label = formatLength(untimedMinutes),
+                onClick = { pickerTarget = TimeField.Length },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "$capacity min total · no start time",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(Modifier.weight(1f)) {
                     Text(
-                        text = label,
-                        color = if (active) Background else TextSecondary,
-                        fontWeight = FontWeight.SemiBold,
+                        "Start time",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
                     )
+                    Spacer(Modifier.height(4.dp))
+                    TimeFieldBox(
+                        label = formatMinuteOfDay(startMinute),
+                        onClick = { pickerTarget = TimeField.Start },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "End time",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    TimeFieldBox(
+                        label = formatMinuteOfDay(endMinute),
+                        onClick = { pickerTarget = TimeField.End },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = "$capacity min window",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // --- Which day ----------------------------------------------------
+        // Timed routines only: an untimed routine has no day at all.
+        if (!untimed) {
+            // Two mutually exclusive modes, worded the same way as the creation
+            // flow: "Just one day" (a date) or "Days of the week" (weekly). A date
+            // makes the routine a one-off; picking a weekday below clears it again,
+            // so the two ways of scheduling can never both be set.
+            Text("Which day", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+            Spacer(Modifier.height(4.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Background, RoundedCornerShape(8.dp))
+                    .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        text = "Just one day",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = TextPrimary,
+                    )
+                    Text(
+                        text = oneOffDate?.let { RoutineDates.oneOffLabel(it) }
+                            ?: "Pick a date",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary,
+                    )
+                }
+                IconButton(onClick = { datePickerOpen = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.CalendarMonth,
+                        contentDescription = "Pick a one-off date",
+                        tint = TextPrimary,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // --- Days of the week -----------------------------------------
+            Text(
+                text = "Days of the week",
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = if (oneOffDate == null) {
+                    "Repeats every week on the days you pick."
+                } else {
+                    "Tap a day to switch to a weekly routine."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                DaysOfWeek.LETTER_LABELS.forEachIndexed { index, label ->
+                    val bit = 1 shl index
+                    val active = oneOffDate == null && (days and bit) != 0
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(40.dp)
+                            .clip(CircleShape)
+                            .background(if (active) TextPrimary else Background)
+                            .clickable {
+                                haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                // Choosing a weekday makes the routine recurring.
+                                oneOffDate = null
+                                days = days xor bit
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = label,
+                            color = if (active) Background else TextSecondary,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
             }
         }
@@ -295,13 +481,9 @@ private fun RoutineSettingsContent(
                 color = TextPrimary,
                 modifier = Modifier.weight(1f),
             )
-            Switch(
+            AppSwitch(
                 checked = enabled,
                 onCheckedChange = { enabled = it },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Background,
-                    checkedTrackColor = TextPrimary,
-                ),
             )
         }
 
@@ -331,13 +513,41 @@ private fun RoutineSettingsContent(
                     color = TextSecondary,
                 )
             }
-            Switch(
+            AppSwitch(
                 checked = useBuffer,
                 onCheckedChange = { useBuffer = it },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Background,
-                    checkedTrackColor = TextPrimary,
-                ),
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // --- Pause --------------------------------------------------------
+        // Pausing freezes the countdown and the in-run alarms; without it the
+        // run can only be finished early. It is per routine so a workout can
+        // allow it while a wake-up routine cannot.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "Allow pausing",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = TextPrimary,
+                )
+                Text(
+                    text = if (allowPause) {
+                        "Pause and Resume show on the run screen"
+                    } else {
+                        "Once it starts, the countdown cannot be stopped"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                )
+            }
+            AppSwitch(
+                checked = allowPause,
+                onCheckedChange = { allowPause = it },
             )
         }
 
@@ -352,21 +562,7 @@ private fun RoutineSettingsContent(
                 Text("Cancel", color = TextSecondary)
             }
             TextButton(
-                onClick = {
-                    onSave(
-                        initial.copy(
-                            name = name.trim(),
-                            startMinuteOfDay = startMinute,
-                            endMinuteOfDay = endMinute,
-                            // A one-off has no weekly days; a recurring routine
-                            // has no date. The two are mutually exclusive.
-                            daysOfWeek = if (oneOffDate != null) DaysOfWeek.NONE else days,
-                            scheduledDate = RoutineDates.store(oneOffDate),
-                            enabled = enabled,
-                            useBuffer = useBuffer,
-                        ),
-                    )
-                },
+                onClick = { saveRoutine(startMinute, endMinute, untimedMinutes) },
                 enabled = nameValid,
             ) {
                 Text(
@@ -418,7 +614,15 @@ private fun RoutineSettingsContent(
 
     val target = pickerTarget
     if (target != TimeField.None) {
-        val seed = if (target == TimeField.Start) startMinute else endMinute
+        val seed = when (target) {
+            TimeField.Start -> startMinute
+            TimeField.End -> endMinute
+            TimeField.Length -> untimedMinutes
+            TimeField.None -> 0
+        }
+        // The stock Material 3 picker holds its own draft state and only reports
+        // a value on OK, so a window the routine cannot hold is refused after
+        // the user has finished choosing rather than mid-gesture.
         val pickerState = rememberTimePickerState(
             initialHour = seed / 60,
             initialMinute = seed % 60,
@@ -429,19 +633,35 @@ private fun RoutineSettingsContent(
             containerColor = Surface,
             title = {
                 Text(
-                    text = if (target == TimeField.Start) "Start time" else "End time",
+                    text = when (target) {
+                        TimeField.Start -> "Start time"
+                        TimeField.End -> "End time"
+                        else -> "Length"
+                    },
                     color = TextPrimary,
                 )
             },
             text = {
-                Box(contentAlignment = Alignment.Center) {
-                    TimePicker(state = pickerState)
-                }
+                TimePicker(state = pickerState)
             },
             confirmButton = {
                 TextButton(onClick = {
                     val picked = pickerState.hour * 60 + pickerState.minute
-                    if (target == TimeField.Start) startMinute = picked else endMinute = picked
+                    when (target) {
+                        TimeField.Start -> applyStart(picked)
+                        TimeField.End -> applyEnd(picked)
+                        // The same rules as a timed window: refuse anything
+                        // that cannot give every task a minute, and confirm
+                        // anything that would have to trim them.
+                        TimeField.Length -> when {
+                            !TimeWindow.canHoldTasks(picked, taskCount) ->
+                                tooManyTasks = true
+                            picked < taskMinutes.sum() ->
+                                pendingUntimedShrink = picked
+                            else -> untimedMinutes = picked.coerceAtLeast(1)
+                        }
+                        TimeField.None -> Unit
+                    }
                     pickerTarget = TimeField.None
                 }) {
                     Text("OK", color = TextPrimary)
@@ -454,10 +674,96 @@ private fun RoutineSettingsContent(
             },
         )
     }
+
+    // --- Shorter-window confirmation --------------------------------------
+    val shrink = pendingShrink
+    if (shrink != null) {
+        val (newStart, newEnd) = shrink
+        val newCapacity = TimeWindow.capacity(newStart, newEnd)
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { pendingShrink = null },
+            containerColor = Surface,
+            title = { Text("Tasks will be shortened", color = TextPrimary) },
+            text = {
+                Text(
+                    text = shrinkExplanation(newCapacity),
+                    color = TextSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    // Persist the shorter window; the view model trims the
+                    // tasks with the same TimeWindow.shrinkToFit rule spelled
+                    // out in the dialog.
+                    pendingShrink = null
+                    saveRoutine(newStart, newEnd, untimedMinutes)
+                }) {
+                    Text("Shorten tasks", color = TextPrimary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingShrink = null }) {
+                    Text("Keep as is", color = TextSecondary)
+                }
+            },
+        )
+    }
+
+    // --- Shorter-length confirmation (untimed) ----------------------------
+    val untimedShrink = pendingUntimedShrink
+    if (untimedShrink != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { pendingUntimedShrink = null },
+            containerColor = Surface,
+            title = { Text("Tasks will be shortened", color = TextPrimary) },
+            text = {
+                Text(
+                    text = shrinkExplanation(untimedShrink),
+                    color = TextSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingUntimedShrink = null
+                    untimedMinutes = untimedShrink
+                    saveRoutine(startMinute, endMinute, untimedShrink)
+                }) {
+                    Text("Shorten tasks", color = TextPrimary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingUntimedShrink = null }) {
+                    Text("Keep as is", color = TextSecondary)
+                }
+            },
+        )
+    }
+
+    // --- Too many tasks ---------------------------------------------------
+    if (tooManyTasks) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { tooManyTasks = false },
+            containerColor = Surface,
+            title = { Text("Too many tasks", color = TextPrimary) },
+            text = {
+                Text(
+                    text = "There are $taskCount tasks and each needs at " +
+                        "least one minute, so this window is too short. Make it " +
+                        "longer.",
+                    color = TextSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { tooManyTasks = false }) {
+                    Text("OK", color = TextPrimary)
+                }
+            },
+        )
+    }
 }
 
 /** Which time picker, if any, is open. */
-private enum class TimeField { None, Start, End }
+private enum class TimeField { None, Start, End, Length }
 
 /** A tappable time value that opens a picker. */
 @Composable
@@ -487,7 +793,18 @@ private fun formatMinuteOfDay(minuteOfDay: Int): String {
     return "%d:%02d".format(wrapped / 60, wrapped % 60)
 }
 
-@Preview(name = "Routine settings", showBackground = true, backgroundColor = 0xFF0E0F12)
+/** Formats a duration in minutes as `45 min` or `1 h 30 min`. */
+private fun formatLength(totalMinutes: Int): String {
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+    return when {
+        hours == 0 -> "$minutes min"
+        minutes == 0 -> "$hours h"
+        else -> "$hours h $minutes min"
+    }
+}
+
+@Preview(name = "Routine settings", showBackground = true, backgroundColor = 0xFF0A1116)
 @Composable
 private fun RoutineSettingsPreview() {
     AdhdRoutineAppTheme {
@@ -500,6 +817,7 @@ private fun RoutineSettingsPreview() {
                     endMinuteOfDay = 8 * 60,
                     daysOfWeek = DaysOfWeek.MONDAY or DaysOfWeek.TUESDAY or DaysOfWeek.WEDNESDAY,
                 ),
+                taskMinutes = listOf(10, 15, 20),
                 onSave = {},
                 onCancel = {},
             )

@@ -94,7 +94,13 @@ object RunStarter {
         // only knows about the next calendar occurrence, which for a run started
         // "now" is usually tomorrow. Both the scheduled and the manual path go
         // through here, so both get the same alarms.
-        scheduler.scheduleRunAlarms(routine.id, startMs)
+        //
+        // An untimed routine has no clock attached to it at all, so it gets no
+        // per-task alarms either — it is a checklist you work through by hand,
+        // not a schedule that should start ringing.
+        if (!routine.isUntimed) {
+            scheduler.scheduleRunAlarms(routine.id, startMs)
+        }
 
         val now = System.currentTimeMillis()
         val state = runState(routine, tasks, startMs, now)
@@ -117,6 +123,7 @@ object RunStarter {
             state = state,
             nextTaskName = next?.let { resolveTaskName(it) },
             takeover = takeover,
+            taskIcon = current?.icon,
         )
 
         // The app is likely closed when a scheduled run begins, so refresh the

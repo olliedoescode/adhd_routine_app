@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.adhd.routineplanner.alarm.AlarmScheduler
 import com.adhd.routineplanner.alarm.RunNotification
 import com.adhd.routineplanner.widget.RunWidgetUpdater
+import com.adhd.routineplanner.data.AlarmSettingsStore
 import com.adhd.routineplanner.data.RoutineRepository
 import com.adhd.routineplanner.data.RunSession
 import com.adhd.routineplanner.data.RunSessionStore
@@ -33,6 +34,8 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.ZoneId
 import javax.inject.Inject
 
 /**
@@ -55,6 +58,11 @@ data class RunUiState(
     ),
     val loading: Boolean = true,
 ) {
+    /**
+     * True while the user has paused the run. [state] is already frozen at the
+     * pause instant, so the countdown on screen does not move.
+     */
+    val isPaused: Boolean get() = session?.isPaused == true
     /**
      * Each task's rendered length in minutes, buffer included, in task order.
      * Falls back to the raw minimums before the routine has loaded.
@@ -100,6 +108,37 @@ data class RunUiState(
             Phase.Running -> tasks.getOrNull(state.currentIndex + 1)
         }
 
+    /**
+     * Minute-of-day the run *actually* began, which is what the run grid's
+     * clock labels and its start/end captions must show.
+     *
+     * A run started by the routine's start alarm is handed the routine's
+     * declared start, so this equals [Routine.startMinuteOfDay] and the grid
+     * matches the schedule. A **test run** started by hand from the plan screen
+     * begins *now*, so its grid has to be labelled with the clock time the user
+     * pressed Run — otherwise a 7:30 routine tested at 9pm would draw a grid
+     * captioned "7:30" next to a cursor that has only just left zero, which
+     * reads as a broken clock.
+     */
+    val runStartMinuteOfDay: Int
+        get() {
+            val routine = routine ?: return 0
+            // Ignore a session belonging to another routine: the screen may
+            // briefly combine a new routine with the previous run's session.
+            val owner = session?.takeIf { it.routineId == routine.id }
+                ?: return routine.startMinuteOfDay
+            val local = Instant.ofEpochMilli(owner.startMs)
+                .atZone(ZoneId.systemDefault())
+                .toLocalTime()
+            return local.hour * 60 + local.minute
+        }
+
+    /**
+     * Minute-of-day the run ends at: the real start plus the rendered length,
+     * so start and end always bracket exactly as many minutes as the grid draws.
+     */
+    val runEndMinuteOfDay: Int get() = runStartMinuteOfDay + totalMinutes
+
     /** True once the routine has finished. */
     val isFinished: Boolean get() = state.phase == Phase.Finished
 
@@ -124,6 +163,13 @@ class RunViewModel @Inject constructor(
     private val sessionStore: RunSessionStore,
     private val alarmScheduler: AlarmScheduler,
     private val widgetUpdater: RunWidgetUpdater,
+    /**
+     * Supplies the "Take over the lock screen" setting. The ongoing
+     * notification keeps its full-screen intent attached for the whole run
+     * whenever this is on, so the takeover fires on every screen wake rather
+     * than only right after a re-post.
+     */
+    private val alarmSettingsStore: AlarmSettingsStore,
     /**
      * Application-scoped coroutine scope, used for work that must outlive this
      * screen (clearing the session when the user stops a run and the screen is
@@ -163,11 +209,15 @@ class RunViewModel @Inject constructor(
         repository.observeTasks(routineId),
         sessionStore.session,
         clock,
-    ) { routine, tasks, session, nowMs ->
+    ) { routine, tasks, session, tickMs ->
         val gridTasks = tasks.toGridTasks()
-        val startMs = session?.takeIf { it.routineId == routineId }?.startMs
-        val state = if (startMs != null && routine != null) {
-            runState(routine, tasks, startMs, nowMs)
+        val owner = session?.takeIf { it.routineId == routineId }
+        // While paused the run is evaluated at the pause instant instead of the
+        // clock, which freezes every derived value — countdown, progress, the
+        // current task — with no extra state to keep in sync.
+        val nowMs = owner?.pausedAtMs ?: tickMs
+        val state = if (owner != null && routine != null) {
+            runState(routine, tasks, owner.startMs, nowMs)
         } else {
             RunState(0, -1, 0, 0f, Phase.BeforeStart)
         }
@@ -210,6 +260,10 @@ class RunViewModel @Inject constructor(
                             taskName = state.currentTask?.name,
                             state = state.state,
                             nextTaskName = state.nextTask?.name,
+                            taskIcon = state.currentTask?.icon,
+                            // Part of the snapshot so pausing and resuming
+                            // re-post the card with "Paused" on it.
+                            paused = state.isPaused,
                         )
                     }
                 }
@@ -218,15 +272,21 @@ class RunViewModel @Inject constructor(
                     if (snapshot == null) {
                         RunNotification.cancel(appContext)
                     } else {
-                        // `takeover = false` on purpose. This collector runs
-                        // every second, and re-posting the notification with a
-                        // full-screen intent would be an *update* — Android does
-                        // not re-fire a full-screen intent for an update, so it
-                        // would achieve nothing while racing the deliberate
-                        // cancel-then-post in RunNotification.repostForTakeover
-                        // (which is what actually launches the takeover on each
-                        // screen wake). The takeover intent is attached only by
-                        // that re-post and by the initial RunStarter.begin post.
+                        // Keep the full-screen intent attached for the whole
+                        // run whenever the takeover setting is on. This is the
+                        // fix for "the takeover only appears when I start a
+                        // run": the old code posted every update with
+                        // `takeover = false`, which *stripped* the full-screen
+                        // intent, so a later screen wake had nothing to fire.
+                        //
+                        // The full-screen intent uses one *stable* request code,
+                        // so these per-second updates are no-op refreshes that
+                        // never launch the takeover. The takeover is armed on a
+                        // genuine screen-on by [UserPresentReceiver], which
+                        // cancels and re-posts the notification to make the
+                        // platform fire the (stable) full-screen intent.
+                        val takeoverEnabled =
+                            alarmSettingsStore.settings.firstOrNull()?.takeoverEnabled ?: true
                         RunNotification.show(
                             context = appContext,
                             routineId = snapshot.routineId,
@@ -234,7 +294,9 @@ class RunViewModel @Inject constructor(
                             taskName = snapshot.taskName,
                             state = snapshot.state,
                             nextTaskName = snapshot.nextTaskName,
-                            takeover = false,
+                            takeover = takeoverEnabled,
+                            taskIcon = snapshot.taskIcon,
+                            paused = snapshot.paused,
                         )
                     }
                     // Keep the lock-screen widget in step with the same
@@ -265,6 +327,52 @@ class RunViewModel @Inject constructor(
         val start = AlarmSchedule.nextRoutineStart(routine, System.currentTimeMillis())
             ?: System.currentTimeMillis()
         viewModelScope.launch { sessionStore.start(routineId, start) }
+    }
+
+    /**
+     * Pauses the run if the routine allows it.
+     *
+     * The clock stops where it is (see [RunSessionStore.pause]) and the
+     * remaining task alarms are cancelled: a paused routine must not
+     * drag the user back to a task they deliberately stopped the clock on.
+     */
+    fun pause() {
+        val routine = uiState.value.routine ?: return
+        if (!routine.allowPause) return
+        if (uiState.value.session?.isPaused == true) return
+        viewModelScope.launch {
+            sessionStore.pause(System.currentTimeMillis())
+            alarmScheduler.cancelRunAlarms(routineId)
+        }
+    }
+
+    /**
+     * Resumes a paused run, re-arming the remaining task alarms against the
+     * shifted session start.
+     *
+     * The current task is deliberately *not* re-armed: it is already running and
+     * its remaining time was preserved by the pause. Re-registering it would
+     * either fire instantly or be dropped by the scheduler's grace window, and
+     * buzzing the user for the task they are looking at is wrong.
+     */
+    fun resume() {
+        val routine = uiState.value.routine ?: return
+        if (!routine.allowPause) return
+        val session = uiState.value.session ?: return
+        if (!session.isPaused) return
+        val fromIndex = uiState.value.state.currentIndex + 1
+        viewModelScope.launch {
+            val shiftedStart = sessionStore.resume(System.currentTimeMillis()) ?: return@launch
+            // Untimed routines never hold alarms, so there is nothing to re-arm.
+            if (routine.isUntimed) return@launch
+            alarmScheduler.cancelRunAlarms(routineId)
+            alarmScheduler.scheduleRunAlarms(routineId, shiftedStart, fromIndex)
+        }
+    }
+
+    /** Pause if running, resume if paused — what the single pill toggles. */
+    fun togglePause() {
+        if (uiState.value.isPaused) resume() else pause()
     }
 
     /**
@@ -310,6 +418,8 @@ class RunViewModel @Inject constructor(
         val taskName: String?,
         val state: RunState,
         val nextTaskName: String?,
+        val taskIcon: String?,
+        val paused: Boolean,
     )
 
     companion object {

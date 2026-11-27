@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -21,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
@@ -36,8 +40,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -56,9 +62,14 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.adhd.routineplanner.domain.IconKeys
 import com.adhd.routineplanner.domain.PlacedTask
 import com.adhd.routineplanner.domain.StockTask
 import com.adhd.routineplanner.domain.TimeParts
+import com.adhd.routineplanner.ui.common.StockTaskChip
+import com.adhd.routineplanner.ui.common.toChip
 import com.adhd.routineplanner.ui.settings.StockTaskIcons
 import com.adhd.routineplanner.ui.theme.AdhdRoutineAppTheme
 import com.adhd.routineplanner.ui.theme.Background
@@ -303,15 +314,16 @@ fun TaskEditDialog(
  *   the other tasks' minimums. The wheels are clamped to this so a new task
  *   cannot over-subscribe the routine.
  * @param stockTasks the user's reusable tasks, offered as one-tap presets that
- *   fill in the name, colour, duration and alarm. Empty hides the row.
- * @param onCreate called with the name, duration in whole minutes, ARGB colour
- *   and alarm flag when the user confirms.
+ *   fill in the name, colour, duration, alarm and icon. Empty hides the row.
+ * @param onCreate called with the name, duration in whole minutes, ARGB colour,
+ *   alarm flag and stock-task icon key when the user confirms.
  * @param onDismiss called when the dialog is dismissed without confirming.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TaskCreateDialog(
     maxMinutes: Int,
-    onCreate: (name: String, minutes: Int, color: Int, alarmEnabled: Boolean) -> Unit,
+    onCreate: (name: String, minutes: Int, color: Int, alarmEnabled: Boolean, icon: String) -> Unit,
     onDismiss: () -> Unit,
     stockTasks: List<StockTask> = emptyList(),
 ) {
@@ -319,6 +331,10 @@ fun TaskCreateDialog(
     var name by remember { mutableStateOf("") }
     var color by remember { mutableStateOf(StockTaskColors.first().toArgb()) }
     var alarmEnabled by remember { mutableStateOf(false) }
+    // The icon key the new task will carry. Starts as the generic task icon and
+    // is replaced when the user taps a stock task, so a task created from
+    // "Shower" keeps the shower icon all the way through the run.
+    var icon by remember { mutableStateOf(IconKeys.TASK) }
     var parts by remember { mutableStateOf(TimeParts.fromMinutes(DEFAULT_NEW_TASK_MINUTES)) }
     val nameFocus = remember { FocusRequester() }
 
@@ -327,81 +343,102 @@ fun TaskCreateDialog(
     // the user lowers the limit by editing another task first.
     val clampedMinutes = parts.totalMinutes.coerceIn(1, maxMinutes.coerceAtLeast(1))
 
-    AlertDialog(
+    // Full-screen, on the app background, exactly like the creation flow's
+    // task dialog. The stock chips are a formatted block at the top; the
+    // hand-typed form sits underneath, so "pick a preset" and "make your own"
+    // read as one continuous sheet instead of a cramped alert.
+    Dialog(
         onDismissRequest = onDismiss,
-        containerColor = Surface,
-        titleContentColor = TextPrimary,
-        textContentColor = TextSecondary,
-        title = {
-            Text(
-                text = "New task",
-                style = MaterialTheme.typography.titleMedium,
-                color = TextPrimary,
-            )
-        },
-        text = {
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Background)
+                .padding(horizontal = 20.dp),
+        ) {
+            // --- Header: title + close --------------------------------
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "New task",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = TextPrimary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = "Close",
+                        tint = TextPrimary,
+                    )
+                }
+            }
+
+            // --- Scrollable body --------------------------------------
             Column(
                 Modifier
                     .fillMaxWidth()
+                    .weight(1f)
                     .verticalScroll(rememberScrollState()),
             ) {
                 // --- Stock tasks -----------------------------------------
                 // One tap fills in everything below, so a routine made of the
-                // usual steps takes seconds rather than a dialog each.
+                // usual steps takes seconds rather than a dialog each. A picked
+                // chip stays highlighted so the user can see what seeded the form.
                 if (stockTasks.isNotEmpty()) {
                     Text(
-                        text = "Stock tasks",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary,
+                        text = "Your stock tasks",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
                     )
-                    Spacer(Modifier.height(8.dp))
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(112.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    Spacer(Modifier.height(10.dp))
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        items(stockTasks, key = { it.id }) { stock ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(Background, RoundedCornerShape(8.dp))
-                                    .clickable {
-                                        haptics.performHapticFeedback(
-                                            HapticFeedbackType.TextHandleMove,
-                                        )
-                                        name = stock.name
-                                        color = stock.color
-                                        alarmEnabled = stock.alarmEnabled
-                                        parts = TimeParts.fromMinutes(
-                                            stock.minutes.coerceIn(1, maxMinutes.coerceAtLeast(1)),
-                                        )
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    imageVector = StockTaskIcons.iconFor(stock.icon),
-                                    contentDescription = null,
-                                    tint = TextSecondary,
-                                    modifier = Modifier.width(20.dp),
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                Text(
-                                    text = stock.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = TextPrimary,
-                                    modifier = Modifier.weight(1f),
-                                )
-                                Text(
-                                    text = "${stock.minutes} min",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TextSecondary,
-                                )
-                            }
+                        // Several built-ins can arrive without a database id
+                        // (id = 0); the name disambiguates them, so it is the
+                        // key that matters here.
+                        stockTasks.forEach { stock ->
+                            val chip = stock.toChip()
+                            StockTaskChip(
+                                chip = chip,
+                                picked = stock.name.trim()
+                                    .equals(name.trim(), ignoreCase = true),
+                                onClick = {
+                                    haptics.performHapticFeedback(
+                                        HapticFeedbackType.TextHandleMove,
+                                    )
+                                    name = stock.name
+                                    color = stock.color
+                                    alarmEnabled = stock.alarmEnabled
+                                    // Keep the stock task's icon so it survives
+                                    // into the run screen and notification.
+                                    icon = stock.icon
+                                    parts = TimeParts.fromMinutes(
+                                        stock.minutes
+                                            .coerceIn(1, maxMinutes.coerceAtLeast(1)),
+                                    )
+                                },
+                            )
                         }
                     }
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(Modifier.height(24.dp))
+                    Text(
+                        text = "Or make your own",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(Modifier.height(12.dp))
                 }
 
                 // --- Name ------------------------------------------------
@@ -414,7 +451,7 @@ fun TaskCreateDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Background, RoundedCornerShape(8.dp))
+                        .background(Surface, RoundedCornerShape(8.dp))
                         .padding(horizontal = 12.dp, vertical = 10.dp)
                         .clickable { nameFocus.requestFocus() },
                 ) {
@@ -513,43 +550,79 @@ fun TaskCreateDialog(
                         alarmEnabled = !alarmEnabled
                     },
                 )
+
+                Spacer(Modifier.height(16.dp))
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onCreate(
-                        name.trim().ifEmpty { PlacedTask.DEFAULT_NAME },
-                        clampedMinutes,
-                        color,
-                        alarmEnabled,
-                    )
-                    onDismiss()
-                },
+
+            // --- Footer: cancel / add ---------------------------------
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Add", color = TextPrimary)
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Cancel", color = TextSecondary)
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(TextPrimary)
+                        .clickable {
+                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            onCreate(
+                                name.trim().ifEmpty { PlacedTask.DEFAULT_NAME },
+                                clampedMinutes,
+                                color,
+                                alarmEnabled,
+                                icon,
+                            )
+                            onDismiss()
+                        }
+                        .padding(vertical = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "Add task",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Background,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = TextSecondary)
-            }
-        },
-    )
+        }
+    }
 }
 
 /** Default duration offered when creating a task. */
 private const val DEFAULT_NEW_TASK_MINUTES: Int = 10
 
 /**
- * The hours/minutes/seconds wheels shared by the create and edit dialogs.
+ * The hours/minutes wheels shared by the create and edit dialogs.
  *
- * Each wheel is capped to [maxMinutes] so the user can never scroll past the
- * time the routine can still absorb: the hours wheel stops at the whole hours
- * that fit, and the minutes/seconds wheels stop at the remainder (or 59 when a
- * full hour is still available). This is what makes "Up to X min available"
- * actually bound the picker rather than merely warn about it.
+ * ## Bounding the total, not just each field
+ *
+ * Each wheel's upper bound is derived from the *other* field so the combination
+ * can never exceed [maxMinutes]: with 90 minutes free you cannot pick 1h 59m.
+ *
+ * ## Why the bounds are decoupled
+ *
+ * The hours ceiling depends only on the cap, and the minutes ceiling depends
+ * only on the chosen hours. Crucially, the hours wheel's offered list does *not*
+ * depend on the minutes value — so scrolling the minutes wheel can never change
+ * the hours wheel's list and yank it back to a different row. (The old version
+ * derived the hours ceiling from the minutes, which is what made "set the
+ * minute" disturb the hour segment.) Changing the hours may still clamp the
+ * minutes, which is the one direction that is genuinely required.
+ *
+ * ## No seconds
+ *
+ * Durations are whole minutes everywhere in the app, so the picker offers only
+ * hours and minutes — there is no seconds segment.
  */
 @Composable
 internal fun DurationWheels(
@@ -558,10 +631,16 @@ internal fun DurationWheels(
     onPartsChange: (TimeParts) -> Unit,
 ) {
     val cap = maxMinutes.coerceAtLeast(1)
-    val maxHours = (cap / 60).coerceAtMost(TimeParts.MAX_HOURS)
-    // When a whole hour is still available the minute/second wheels can run the
-    // full 0..59; otherwise they stop at the leftover minutes.
-    val maxMinutesWheel = if (cap >= 60) 59 else cap
+
+    // The most the hours wheel may show: the whole hours that fit in the cap.
+    // Deliberately independent of the minutes value, so changing minutes never
+    // rebuilds this wheel's list.
+    val maxHours = (cap / 60).coerceIn(0, TimeParts.MAX_HOURS)
+    // The most the minutes wheel may show: whatever is left after the hours,
+    // capped at 59. This depends on hours only, so changing hours may clamp the
+    // minutes (correct), but changing minutes never touches the hours wheel.
+    val maxMinutesWheel = (cap - parts.hours * 60).coerceIn(0, 59)
+
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.Center,
@@ -571,6 +650,7 @@ internal fun DurationWheels(
             values = TimeParts.HOUR_VALUES,
             selected = parts.hours,
             label = "h",
+            // Keep minutes untouched; only the hours field is bounded.
             onSelected = { onPartsChange(parts.copy(hours = it).clamped()) },
             modifier = Modifier.weight(1f),
             maxValue = maxHours,
@@ -581,15 +661,6 @@ internal fun DurationWheels(
             selected = parts.minutes,
             label = "m",
             onSelected = { onPartsChange(parts.copy(minutes = it).clamped()) },
-            modifier = Modifier.weight(1f),
-            maxValue = maxMinutesWheel,
-        )
-        WheelSeparator()
-        TimeWheel(
-            values = TimeParts.SIXTY_VALUES,
-            selected = parts.seconds,
-            label = "s",
-            onSelected = { onPartsChange(parts.copy(seconds = it).clamped()) },
             modifier = Modifier.weight(1f),
             maxValue = maxMinutesWheel,
         )
@@ -715,6 +786,12 @@ private fun TimeWheel(
     )
     val scope = rememberCoroutineScope()
 
+    // The value currently under the highlight band. This is tracked live from
+    // the scroll position so the bold/centred styling follows the finger
+    // immediately, instead of lagging until the wheel settles and `selected`
+    // catches up.
+    var centredValue by remember { mutableStateOf(selected) }
+
     /** Scroll offset that puts the row at [listIndex] in the centre. */
     fun centreOffset(listIndex: Int): Int = -WheelVisibleRows * rowPx
 
@@ -725,6 +802,20 @@ private fun TimeWheel(
         return info.visibleItemsInfo.minByOrNull { item ->
             kotlin.math.abs((item.offset + item.size / 2) - center)
         }?.index ?: listState.firstVisibleItemIndex
+    }
+
+    /** The offered value at a given list index (accounting for the top padding). */
+    fun valueAt(listIndex: Int): Int =
+        offered[(listIndex - WheelVisibleRows).coerceIn(0, offered.lastIndex)]
+
+    // Track the centred value live as the list scrolls, so the highlight never
+    // lags behind the finger.
+    LaunchedEffect(listState, offered) {
+        snapshotFlow { centredIndex() }
+            .collect { index ->
+                val value = valueAt(index)
+                if (value != centredValue) centredValue = value
+            }
     }
 
     /**
@@ -748,11 +839,33 @@ private fun TimeWheel(
                 index = target,
                 scrollOffset = centreOffset(target),
             )
-            val value = offered[(target - WheelVisibleRows).coerceIn(0, offered.lastIndex)]
+            val value = valueAt(target)
             if (value != selected) {
                 haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 onSelected(value)
             }
+        }
+    }
+
+    /**
+     * Jump straight to [value] and report it at once.
+     *
+     * Tapping a row used to rely on the settle coroutine, which could still be
+     * animating from a previous drag when the tap landed — so a quick tap after
+     * a drag was sometimes swallowed. Reporting synchronously here, and
+     * cancelling any in-flight settle first, makes a tap always register.
+     */
+    fun jumpTo(value: Int) {
+        val index = offered.indexOf(value)
+        if (index < 0) return
+        val listIndex = index + WheelVisibleRows
+        scope.launch {
+            listState.scrollToItem(index = listIndex, scrollOffset = centreOffset(listIndex))
+        }
+        centredValue = value
+        if (value != selected) {
+            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            onSelected(value)
         }
     }
 
@@ -766,6 +879,7 @@ private fun TimeWheel(
         if (centredIndex() != listIndex) {
             listState.scrollToItem(index = listIndex, scrollOffset = centreOffset(listIndex))
         }
+        centredValue = selected
     }
 
     Box(
@@ -793,18 +907,21 @@ private fun TimeWheel(
                 Spacer(Modifier.height(WheelRowHeight))
             }
             items(offered) { value ->
-                val isSelected = value == selected
+                // Highlight the row under the band, tracked live, so the bold
+                // styling follows the scroll without waiting for a settle.
+                val isCentred = value == centredValue
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(WheelRowHeight),
+                        .height(WheelRowHeight)
+                        .clickable { jumpTo(value) },
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
                         text = value.toString(),
-                        color = if (isSelected) TextPrimary else TextSecondary,
-                        fontSize = if (isSelected) 22.sp else 16.sp,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isCentred) TextPrimary else TextSecondary,
+                        fontSize = if (isCentred) 22.sp else 16.sp,
+                        fontWeight = if (isCentred) FontWeight.Bold else FontWeight.Normal,
                     )
                 }
             }
@@ -824,7 +941,7 @@ private fun TimeWheel(
     }
 }
 
-@Preview(name = "Task edit dialog", showBackground = true, backgroundColor = 0xFF0E0F12)
+@Preview(name = "Task edit dialog", showBackground = true, backgroundColor = 0xFF0A1116)
 @Composable
 private fun TaskEditDialogPreview() {
     AdhdRoutineAppTheme {

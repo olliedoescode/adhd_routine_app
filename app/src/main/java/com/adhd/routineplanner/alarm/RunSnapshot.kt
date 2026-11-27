@@ -27,6 +27,18 @@ data class RunSnapshot(
      * I doing" and "what's next" without a second card in the shade.
      */
     val nextTaskName: String? = null,
+    /**
+     * The current task's stock-task icon key, so the ongoing notification can
+     * use the task's own icon as its small icon. `null` before the start and
+     * after the finish, when there is no current task.
+     */
+    val taskIcon: String? = null,
+    /**
+     * True while the user has paused the run. The countdown in [state] is
+     * already frozen, so this only adds the word "Paused" to the copy — without
+     * it a frozen countdown reads like a broken widget.
+     */
+    val paused: Boolean = false,
 ) {
     /** True once the routine has run past its end. */
     val isFinished: Boolean get() = state.phase == Phase.Finished
@@ -55,7 +67,7 @@ data class RunSnapshot(
         Phase.Running -> {
             val left = "${remainingLabel(state.secondsRemaining)} left"
             val next = nextTaskName?.let { "Next: $it" } ?: "Last task"
-            "$left · $next"
+            if (paused) "Paused · $left · $next" else "$left · $next"
         }
         Phase.BeforeStart -> taskName?.let { "First up: $it" } ?: ""
         Phase.Finished -> ""
@@ -76,7 +88,8 @@ data class RunSnapshot(
         Phase.Finished -> "Routine finished"
         Phase.Running -> {
             val name = taskName ?: "Task"
-            "$name · ${remainingLabel(state.secondsRemaining)} left"
+            val prefix = if (paused) "Paused · " else ""
+            "$prefix$name · ${remainingLabel(state.secondsRemaining)} left"
         }
     }
 
@@ -112,7 +125,9 @@ data class RunSnapshot(
         ): RunSnapshot? {
             val routine: Routine = repository.getRoutine(session.routineId) ?: return null
             val tasks: List<PlacedTask> = repository.getTasks(session.routineId)
-            val state = runState(routine, tasks, session.startMs, nowMs)
+            // A paused run is evaluated at the pause instant, exactly like the
+            // run screen does, so the widget and the notification freeze too.
+            val state = runState(routine, tasks, session.startMs, session.pausedAtMs ?: nowMs)
             val current = tasks.getOrNull(state.currentIndex)
             // Before the start `currentIndex` is -1, so a naive `+1` would name
             // the first task as "next" while it is also the one about to run.
@@ -127,6 +142,8 @@ data class RunSnapshot(
                 taskName = current?.name?.ifBlank { PlacedTask.DEFAULT_NAME },
                 state = state,
                 nextTaskName = next?.name?.ifBlank { PlacedTask.DEFAULT_NAME },
+                taskIcon = current?.icon,
+                paused = session.isPaused,
             )
         }
 

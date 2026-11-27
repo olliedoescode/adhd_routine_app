@@ -13,11 +13,13 @@ import com.adhd.routineplanner.domain.Buffer
 import com.adhd.routineplanner.domain.Drag
 import com.adhd.routineplanner.domain.Durations
 import com.adhd.routineplanner.domain.Grid
+import com.adhd.routineplanner.domain.IconKeys
 import com.adhd.routineplanner.domain.PlacedTask
 import com.adhd.routineplanner.domain.Reorder
 import com.adhd.routineplanner.domain.Routine
 import com.adhd.routineplanner.domain.Schedule
 import com.adhd.routineplanner.domain.StockTask
+import com.adhd.routineplanner.domain.WindowEdit
 import com.adhd.routineplanner.ui.plan.GridTask
 import com.adhd.routineplanner.ui.plan.toGridTasks
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -97,6 +99,11 @@ data class PlanUiState(
     val tasks: List<GridTask> = emptyList(),
     val cols: Int = Grid.DEFAULT_COLS,
     val selectedId: Long? = null,
+    /**
+     * Ids highlighted for a bulk action. Empty means the timeline is in
+     * "tap opens the editor" mode; non-empty means "tap toggles".
+     */
+    val multiSelectedIds: Set<Long> = emptySet(),
     val preview: PlanPreview = PlanPreview(),
     val gesture: GridGesture = GridGesture.Idle,
     val undo: UndoSnapshot? = null,
@@ -202,6 +209,7 @@ class PlanViewModel @Inject constructor(
 
     private val cols = MutableStateFlow(Grid.DEFAULT_COLS)
     private val selectedId = MutableStateFlow<Long?>(null)
+    private val multiSelectedIds = MutableStateFlow<Set<Long>>(emptySet())
     private val preview = MutableStateFlow(PlanPreview())
     private val gesture = MutableStateFlow<GridGesture>(GridGesture.Idle)
     private val undo = MutableStateFlow<UndoSnapshot?>(null)
@@ -221,6 +229,7 @@ class PlanViewModel @Inject constructor(
         gesture,
         undo,
         sessionStore.session,
+        multiSelectedIds,
     ) { values -> values }
 
     @Suppress("UNCHECKED_CAST")
@@ -234,6 +243,7 @@ class PlanViewModel @Inject constructor(
             tasks = tasks.toGridTasks(),
             cols = values[2] as Int,
             selectedId = values[3] as Long?,
+            multiSelectedIds = values[8] as Set<Long>,
             preview = values[4] as PlanPreview,
             gesture = values[5] as GridGesture,
             undo = values[6] as UndoSnapshot?,
@@ -293,12 +303,94 @@ class PlanViewModel @Inject constructor(
     }
 
     /**
-     * Persist edited routine settings (name, start time, end time, days,
-     * enabled). The repository reschedules alarms for the routine (spec §9).
+     * Toggle a task in the multi-selection used by the timeline's bulk delete.
+     * Selecting anything clears the single-selection editor so the two modes
+     * cannot both be open.
      */
-    fun saveRoutine(routine: Routine) {
+    fun toggleMultiSelect(id: Long) {
+        selectedId.value = null
+        val current = multiSelectedIds.value
+        multiSelectedIds.value = if (id in current) current - id else current + id
+    }
+
+    /** Clear the multi-selection, returning the timeline to tap-to-edit. */
+    fun clearMultiSelect() {
+        multiSelectedIds.value = emptySet()
+    }
+
+    /**
+     * Delete every task in the multi-selection in one undoable commit.
+     * Removes from the highest index down so earlier removals do not shift the
+     * indices still to go.
+     */
+    fun deleteSelectedTasks() {
         if (editingLocked) return
-        viewModelScope.launch { repository.saveRoutine(routine) }
+        val ids = multiSelectedIds.value
+        if (ids.isEmpty()) return
+        val indices = lastCommitted.indices
+            .filter { lastCommitted[it].id in ids }
+            .sortedDescending()
+        if (indices.isEmpty()) {
+            clearMultiSelect()
+            return
+        }
+        var remaining = lastCommitted
+        indices.forEach { remaining = Reorder.remove(remaining, it) }
+        multiSelectedIds.value = emptySet()
+        commit(remaining, label = if (ids.size == 1) "Delete" else "Delete ${ids.size} tasks")
+    }
+
+    /**
+     * Persist edited routine settings (name, start time, end time, days,
+     * enabled) **and** reconcile the tasks with the new window, in one atomic
+     * step.
+     *
+     * This used to be two calls from the UI — `saveRoutine(updated)` followed by
+     * `shrinkTasksToFit(capacity)` — which raced: the trim read
+     * `uiState.value.tasks`, a value that had not yet caught up with the routine
+     * write, and so either bailed out early or wrote a stale list. The visible
+     * symptom was that editing the start or end time wiped the routine's tasks.
+     *
+     * The decision now comes from the pure [WindowEdit] state machine, which is
+     * evaluated against [lastCommitted] — the authoritative task list, not a
+     * possibly-stale snapshot — and the routine row and the tasks are written
+     * together on one coroutine.
+     *
+     * Tasks are only ever *shortened*, never deleted. A window that still holds
+     * every task at its minimum leaves the tasks completely untouched, so the
+     * buffer simply stretches them to fill the new window.
+     *
+     * @return the [WindowEdit.State] that was applied, so the caller can tell
+     *   the user when an edit was refused.
+     */
+    fun applyWindowEdit(updated: Routine): WindowEdit.State {
+        if (editingLocked) return WindowEdit.State.Unchanged
+        val previous = uiState.value.routine ?: return WindowEdit.State.Unchanged
+        val current = lastCommitted
+        val outcome = WindowEdit.evaluate(previous, updated, current)
+
+        // A window that cannot hold every task at one minute each is refused
+        // outright — nothing is written, so the tasks stay exactly as they are.
+        if (outcome.state == WindowEdit.State.Refuse) return outcome.state
+
+        // Every other outcome is persisted. `Unchanged` only means the *window
+        // length* did not change, so a rename, a day toggle, the enabled switch
+        // or the buffer toggle still has to be written — otherwise the edit is
+        // silently dropped and the sheet appears to do nothing.
+        if (outcome.tasksChanged) {
+            undo.value = UndoSnapshot(label = "Shorten tasks to fit", tasks = current)
+        }
+        clearPreview()
+        viewModelScope.launch {
+            repository.saveRoutine(updated)
+            // Only ever rewrite the task rows when the state machine actually
+            // shortened something, and never with an empty list: `replaceAll`
+            // deletes first, so an empty write would wipe the routine's tasks.
+            if (outcome.tasksChanged && outcome.tasks.isNotEmpty()) {
+                repository.commitTasks(routineId, outcome.tasks)
+            }
+        }
+        return outcome.state
     }
 
     /**
@@ -430,12 +522,17 @@ class PlanViewModel @Inject constructor(
      * @param minutes the task's minimum duration.
      * @param color the task's ARGB colour.
      * @param alarmEnabled whether this task should raise an alarm.
+     * @param icon the stock-task icon key the task was created from, or
+     *   [IconKeys.TASK] for a hand-typed task. Carried through to the run screen
+     *   and the ongoing notification so a stock task keeps its icon once it is
+     *   running — without this the run card always showed the generic tick.
      */
     fun createTask(
         name: String,
         minutes: Int,
         color: Int,
         alarmEnabled: Boolean = false,
+        icon: String = IconKeys.TASK,
     ) {
         if (editingLocked) return
         val trimmed = name.trim().ifEmpty { PlacedTask.DEFAULT_NAME }
@@ -446,6 +543,7 @@ class PlanViewModel @Inject constructor(
             name = trimmed,
             color = color,
             alarmEnabled = alarmEnabled,
+            icon = icon,
         )
         commit(lastCommitted + newTask, label = "Add $trimmed")
     }

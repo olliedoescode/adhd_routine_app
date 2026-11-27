@@ -93,12 +93,12 @@ class RunWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = RunWidget()
 }
 
-/** Colours mirroring the app's dark theme so the widget looks native. */
-private val WidgetBackground = Color(0xFF0E0F12)
-private val WidgetSurface = Color(0xFF16181D)
-private val WidgetTextPrimary = Color(0xFFE8EAED)
-private val WidgetTextSecondary = Color(0xFF9AA0A6)
-private val WidgetCountdownRed = Color(0xFFFF3B30)
+/** Colours mirroring the app's warm dark theme so the widget looks native. */
+private val WidgetBackground = Color(0xFF14110F)
+private val WidgetSurface = Color(0xFF1E1A17)
+private val WidgetTextPrimary = Color(0xFFF2EBE3)
+private val WidgetTextSecondary = Color(0xFFA89C8F)
+private val WidgetCountdownRed = Color(0xFFFF5A4D)
 
 @Composable
 private fun RunWidgetContent(snapshot: RunSnapshot?) {

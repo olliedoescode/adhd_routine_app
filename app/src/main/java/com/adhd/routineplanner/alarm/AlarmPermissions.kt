@@ -22,6 +22,7 @@ data class AlarmPermissionStatus(
     val exactAlarmsGranted: Boolean,
     val fullScreenIntentGranted: Boolean,
     val batteryUnrestricted: Boolean,
+    val overlayGranted: Boolean,
 )
 
 /**
@@ -39,6 +40,7 @@ object AlarmPermissions {
         exactAlarmsGranted = exactAlarmsGranted(context),
         fullScreenIntentGranted = fullScreenIntentGranted(context),
         batteryUnrestricted = batteryUnrestricted(context),
+        overlayGranted = overlayGranted(context),
     )
 
     /** `POST_NOTIFICATIONS` on Android 13+, always true below that. */
@@ -70,6 +72,21 @@ object AlarmPermissions {
         return power.isIgnoringBatteryOptimizations(context.packageName)
     }
 
+    /**
+     * "Display over other apps" (`SYSTEM_ALERT_WINDOW`) on Android 6+, always
+     * true below that.
+     *
+     * The screen-on / unlock receiver uses this permission to open the
+     * lock-screen takeover *directly* from the background. Without it, a plain
+     * broadcast receiver is blocked by the Android 10+ background-activity-start
+     * restriction, which is exactly why the takeover did nothing on the
+     * biometric-unlock path.
+     */
+    fun overlayGranted(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        return Settings.canDrawOverlays(context)
+    }
+
     /** Deep link to the app's notification settings. */
     fun notificationSettingsIntent(context: Context): Intent =
         Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
@@ -98,6 +115,13 @@ object AlarmPermissions {
     /** Deep link to the battery-optimisation exemption prompt. */
     fun batterySettingsIntent(context: Context): Intent =
         Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:${context.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+    /** Deep link to Special app access > Display over other apps. */
+    fun overlaySettingsIntent(context: Context): Intent =
+        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION).apply {
             data = Uri.parse("package:${context.packageName}")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }

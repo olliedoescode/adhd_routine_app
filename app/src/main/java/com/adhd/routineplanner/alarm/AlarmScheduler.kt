@@ -44,11 +44,34 @@ interface AlarmScheduler {
      * started by the scheduler or by hand.
      *
      * Tasks whose start is already in the past are skipped (they cannot fire).
+     *
+     * [firstTaskIndex] is the first task index that should be (re-)registered.
+     * [AlarmReceiver] passes `firedTaskIndex + 1` when it self-heals the run
+     * after a task alarm, so the task that has *just* fired is never registered
+     * again. Without this the grace window below pulled the just-fired task's
+     * alarm forward to `now + FIRST_TASK_LEAD_MS`, which re-fired the tone and
+     * vibration every ~3 seconds.
      */
-    suspend fun scheduleRunAlarms(routineId: Long, startMs: Long)
+    suspend fun scheduleRunAlarms(
+        routineId: Long,
+        startMs: Long,
+        firstTaskIndex: Int = 0,
+    )
 
     /** Cancels the in-run task alarms for [routineId] (e.g. when a run stops). */
     fun cancelRunAlarms(routineId: Long)
+
+    /**
+     * Re-registers the alarm for one task [minutes] from now, so the alarm
+     * screen's Snooze button rings again later.
+     *
+     * The snooze is a *single* re-arm of the same task's alarm, not a change to
+     * the routine: the timeline is untouched, so the run screen keeps counting
+     * down as before and the snoozed alarm simply fires again on top of it.
+     * Registering it with the task's normal request code means a later
+     * [cancelRunAlarms] (when the run stops) clears it too.
+     */
+    fun snoozeTaskAlarm(routineId: Long, taskIndex: Int, minutes: Int)
 
     /**
      * Schedules a one-off test alarm [minutes] from now (spec section 15.10).
@@ -71,8 +94,13 @@ class NoOpAlarmScheduler @Inject constructor() : AlarmScheduler {
     override fun cancel(routineId: Long) = Unit
     override suspend fun rescheduleRoutine(routineId: Long) = Unit
     override suspend fun rescheduleAll() = Unit
-    override suspend fun scheduleRunAlarms(routineId: Long, startMs: Long) = Unit
+    override suspend fun scheduleRunAlarms(
+        routineId: Long,
+        startMs: Long,
+        firstTaskIndex: Int,
+    ) = Unit
     override fun cancelRunAlarms(routineId: Long) = Unit
+    override fun snoozeTaskAlarm(routineId: Long, taskIndex: Int, minutes: Int) = Unit
     override fun scheduleTestAlarm(minutes: Int): Boolean = true
 }
 
@@ -98,6 +126,10 @@ class AlarmManagerScheduler @Inject constructor(
         // Always clear first: a task may have had its alarm switched off since
         // the last schedule, and a stale PendingIntent would still fire.
         cancel(routine.id)
+        // An untimed routine is run by hand from the routine list, never on a
+        // clock, so it must never hold an alarm. The cancel above matters here
+        // too: flipping an existing routine to untimed has to drop its alarms.
+        if (routine.isUntimed) return
         if (!routine.enabled) return
         if (tasks.isEmpty()) return
         val now = System.currentTimeMillis()
@@ -184,7 +216,11 @@ class AlarmManagerScheduler @Inject constructor(
      * Tasks whose start is already in the past are skipped — they cannot fire,
      * and registering them would make AlarmManager deliver them immediately.
      */
-    override suspend fun scheduleRunAlarms(routineId: Long, startMs: Long) {
+    override suspend fun scheduleRunAlarms(
+        routineId: Long,
+        startMs: Long,
+        firstTaskIndex: Int,
+    ) {
         withContext(Dispatchers.IO) {
             val routineEntity = routineDao.getById(routineId) ?: return@withContext
             val routine = routineEntity.toDomain()
@@ -195,14 +231,31 @@ class AlarmManagerScheduler @Inject constructor(
             // Absolute start of each task = session start + its rendered offset.
             val offsets = com.adhd.routineplanner.domain.Schedule.startMinutes(routine, tasks)
             tasks.forEachIndexed { index, task ->
+                // Never re-register a task at or before the one that just fired.
+                // The grace window below would otherwise pull it forward to
+                // `now + FIRST_TASK_LEAD_MS` and make it ring again immediately.
+                if (index < firstTaskIndex) return@forEachIndexed
                 if (!task.alarmEnabled) return@forEachIndexed
                 val offset = offsets.getOrNull(index) ?: return@forEachIndexed
                 val trigger = startMs + offset * 60_000L
                 // Skip tasks that have already started: an alarm in the past
                 // would fire instantly and stack on the current task.
-                if (trigger <= now) return@forEachIndexed
+                //
+                // The grace window matters for a *test run*: `beginNow` passes
+                // `startMs = System.currentTimeMillis()`, so the first task's
+                // trigger is a few milliseconds in the past by the time we get
+                // here and would always be dropped. A task that started within
+                // the last minute is still "the current task", so its alarm is
+                // pulled forward to a moment from now instead of being skipped —
+                // that is what makes the first alarm of a test run actually
+                // fire. Anything older is genuinely in the past and is skipped.
+                val effectiveTrigger = when {
+                    trigger > now -> trigger
+                    now - trigger <= FIRST_TASK_GRACE_MS -> now + FIRST_TASK_LEAD_MS
+                    else -> return@forEachIndexed
+                }
                 setAlarm(
-                    triggerAtMs = trigger,
+                    triggerAtMs = effectiveTrigger,
                     requestCode = requestCodeFor(routineId, index),
                     routineId = routineId,
                     taskIndex = index,
@@ -230,6 +283,25 @@ class AlarmManagerScheduler @Inject constructor(
             alarmManager.cancel(pi)
             pi.cancel()
         }
+    }
+
+    /**
+     * Re-arms one task's alarm [minutes] from now for the Snooze button.
+     *
+     * It reuses the task's normal request code, so the snoozed alarm replaces
+     * whatever was registered for that task and is cleared by the usual
+     * [cancelRunAlarms] when the run stops. The trigger is always in the future
+     * (a snooze is by definition "later"), so it goes through the same
+     * [setAlarm] path as every other alarm and keeps the exact-alarm fallbacks.
+     */
+    override fun snoozeTaskAlarm(routineId: Long, taskIndex: Int, minutes: Int) {
+        val trigger = System.currentTimeMillis() + minutes.coerceAtLeast(1) * 60_000L
+        setAlarm(
+            triggerAtMs = trigger,
+            requestCode = requestCodeFor(routineId, taskIndex),
+            routineId = routineId,
+            taskIndex = taskIndex,
+        )
     }
 
     override fun scheduleTestAlarm(minutes: Int): Boolean {
@@ -366,6 +438,20 @@ class AlarmManagerScheduler @Inject constructor(
 
     companion object {
         private const val TAG = "AlarmScheduler"
+
+        /**
+         * How far in the past a task's start may be and still have its alarm
+         * registered (pulled forward) instead of skipped.
+         *
+         * A test run starts "now", so the first task's trigger is a few
+         * milliseconds behind by the time [scheduleRunAlarms] runs. Without this
+         * window that first alarm was always dropped, which is why a test run
+         * never rang.
+         */
+        private const val FIRST_TASK_GRACE_MS: Long = 60_000L
+
+        /** Lead-in applied to a task whose start has just passed. */
+        private const val FIRST_TASK_LEAD_MS: Long = 3_000L
 
         /** Upper bound on tasks per routine (spec section 14.1: 1440 minutes). */
         const val MAX_TASKS_PER_ROUTINE: Int = 1440

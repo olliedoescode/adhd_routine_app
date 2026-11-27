@@ -14,18 +14,32 @@ import javax.inject.Singleton
  * The active run session: which routine is running and when it started
  * (spec section 16).
  *
- * `(routineId, startMs)` is the whole state. Everything else — elapsed time,
- * the current task, progress — is derived from the wall clock by
+ * `(routineId, startMs, pausedAtMs)` is the whole state. Everything else —
+ * elapsed time, the current task, progress — is derived from the wall clock by
  * [com.adhd.routineplanner.domain.runState], so a killed process resumes
  * correctly and a clock change self-corrects on the next tick.
  *
  * A manual Run stores `System.currentTimeMillis()`; a scheduled run stores
  * today's occurrence of the routine start time.
+ *
+ * ## Pause
+ *
+ * Pausing does not add a second clock. [pausedAtMs] records *when* the pause
+ * began, and while it is non-null the run state is evaluated at that instant
+ * instead of "now", so the countdown freezes where it was. Resuming shifts
+ * [startMs] forward by the paused span, which restores the original elapsed
+ * time with no other bookkeeping. A paused run therefore survives a process
+ * death exactly like a running one.
  */
 data class RunSession(
     val routineId: Long,
     val startMs: Long,
-)
+    /** Wall-clock instant the run was paused at, or `null` while running. */
+    val pausedAtMs: Long? = null,
+) {
+    /** True while the run's clock is stopped. */
+    val isPaused: Boolean get() = pausedAtMs != null
+}
 
 /**
  * Persists the single active [RunSession] in DataStore (spec section 16).
@@ -43,7 +57,11 @@ class RunSessionStore @Inject constructor(
     val session: Flow<RunSession?> = dataStore.data.map { prefs ->
         val routineId = prefs[KEY_ROUTINE_ID] ?: return@map null
         val startMs = prefs[KEY_START_MS] ?: return@map null
-        RunSession(routineId = routineId, startMs = startMs)
+        RunSession(
+            routineId = routineId,
+            startMs = startMs,
+            pausedAtMs = prefs[KEY_PAUSED_AT],
+        )
     }
 
     /**
@@ -72,10 +90,47 @@ class RunSessionStore @Inject constructor(
         dataStore.edit { prefs ->
             prefs[KEY_ROUTINE_ID] = routineId
             prefs[KEY_START_MS] = startMs
+            // A fresh run is never paused.
+            prefs.remove(KEY_PAUSED_AT)
             // A fresh run always begins "not present": the first alarm or
             // screen-on must take over the lock screen.
             prefs[KEY_USER_PRESENT] = false
         }
+    }
+
+    /**
+     * Stops the run's clock at [nowMs].
+     *
+     * Idempotent: a second pause keeps the first timestamp, so the span added
+     * back on resume is exactly the time the user spent paused.
+     */
+    suspend fun pause(nowMs: Long) {
+        dataStore.edit { prefs ->
+            if (prefs[KEY_ROUTINE_ID] == null) return@edit
+            if (prefs[KEY_PAUSED_AT] != null) return@edit
+            prefs[KEY_PAUSED_AT] = nowMs
+        }
+    }
+
+    /**
+     * Restarts the run's clock at [nowMs], shifting the session start forward by
+     * however long the pause lasted.
+     *
+     * Returns the shifted start time, or `null` when the run was not paused, so
+     * the caller can re-arm the remaining task alarms against the new start.
+     */
+    suspend fun resume(nowMs: Long): Long? {
+        var shifted: Long? = null
+        dataStore.edit { prefs ->
+            val pausedAt = prefs[KEY_PAUSED_AT] ?: return@edit
+            val startMs = prefs[KEY_START_MS] ?: return@edit
+            val span = (nowMs - pausedAt).coerceAtLeast(0L)
+            val newStart = startMs + span
+            prefs[KEY_START_MS] = newStart
+            prefs.remove(KEY_PAUSED_AT)
+            shifted = newStart
+        }
+        return shifted
     }
 
     /** Records that the user has unlocked the phone during the current run. */
@@ -88,6 +143,7 @@ class RunSessionStore @Inject constructor(
         dataStore.edit { prefs ->
             prefs.remove(KEY_ROUTINE_ID)
             prefs.remove(KEY_START_MS)
+            prefs.remove(KEY_PAUSED_AT)
             prefs.remove(KEY_USER_PRESENT)
         }
     }
@@ -95,6 +151,7 @@ class RunSessionStore @Inject constructor(
     private companion object {
         val KEY_ROUTINE_ID = longPreferencesKey("run_routine_id")
         val KEY_START_MS = longPreferencesKey("run_start_ms")
+        val KEY_PAUSED_AT = longPreferencesKey("run_paused_at")
         val KEY_USER_PRESENT = booleanPreferencesKey("run_user_present")
     }
 }

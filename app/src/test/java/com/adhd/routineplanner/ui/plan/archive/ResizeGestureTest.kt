@@ -1,4 +1,4 @@
-package com.adhd.routineplanner.ui.plan
+package com.adhd.routineplanner.ui.plan.archive
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

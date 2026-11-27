@@ -19,6 +19,18 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!--
+      Run foreground service: keeps the process alive for the whole run so the
+      runtime-registered SCREEN_ON / USER_PRESENT receiver keeps driving the
+      lock-screen takeover after the app task is swiped away.
+      SYSTEM_ALERT_WINDOW ("Display over other apps") lets that receiver open the
+      takeover directly on every wake, including the biometric unlock of an
+      already-lit screen where no full-screen-intent slot is available.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!--
       No INTERNET permission: all data stays on the device (spec section 18).
     -->
 
@@ -78,10 +90,27 @@
             android:name=".alarm.RunTakeoverActivity"
             android:exported="false"
             android:excludeFromRecents="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleInstance"
             android:showOnLockScreen="true"
             android:turnScreenOn="true"
             android:theme="@style/Theme.AdhdRoutineApp" />
+
+        <!--
+          Keeps the app process alive for the whole run so the runtime-registered
+          UserPresentReceiver (screen-on / unlock) keeps firing the lock-screen
+          takeover after the app task is swiped away. It holds the same ongoing
+          run notification, so the user sees nothing new. `specialUse` is the
+          Android 14+ foreground-service type for this long-lived run
+          supervision; the property documents the subtype.
+        -->
+        <service
+            android:name=".alarm.RunForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a routine active so the lock-screen takeover and task alarms keep firing while a routine is running." />
+        </service>
 
         <!--
           UserPresentReceiver is registered at runtime in App.onCreate rather

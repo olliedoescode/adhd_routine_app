@@ -45,6 +45,10 @@ object AlarmSchedule {
         nowMs: Long,
         zone: ZoneId = ZoneId.systemDefault(),
     ): Long? {
+        // An untimed routine has no start time at all — you run it when you
+        // feel like it — so there is never a "next start" to schedule or to
+        // count down to.
+        if (routine.isUntimed) return null
         if (!routine.enabled) return null
 
         val startTime = LocalTime.of(

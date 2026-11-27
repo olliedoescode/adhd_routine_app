@@ -38,6 +38,19 @@ data class RoutineEntity(
      * itself; when it is `null` the routine repeats on [daysOfWeek].
      */
     val scheduledDate: String? = null,
+    /**
+     * A routine with no start time, day or date: just a task list plus a
+     * duration, run on demand from the routine list. Added in schema v7.
+     *
+     * Stored as a flag rather than by overloading `scheduledDate` so the
+     * scheduler can skip these outright: an untimed routine must never get an
+     * alarm.
+     */
+    val isUntimed: Boolean = false,
+    /**
+     * Whether the run screen may be paused and resumed. Added in schema v7.
+     */
+    val allowPause: Boolean = false,
 )
 
 /** Maps the persisted entity to the Android-free domain type. */
@@ -50,6 +63,8 @@ fun RoutineEntity.toDomain(): Routine = Routine(
     enabled = enabled,
     useBuffer = useBuffer,
     scheduledDate = scheduledDate,
+    isUntimed = isUntimed,
+    allowPause = allowPause,
 )
 
 /** Maps the domain type back to the persisted entity. */
@@ -62,4 +77,6 @@ fun Routine.toEntity(): RoutineEntity = RoutineEntity(
     enabled = enabled,
     useBuffer = useBuffer,
     scheduledDate = scheduledDate,
+    isUntimed = isUntimed,
+    allowPause = allowPause,
 )

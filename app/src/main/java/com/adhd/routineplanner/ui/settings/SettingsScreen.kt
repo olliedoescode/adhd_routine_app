@@ -6,17 +6,19 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,21 +27,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -63,33 +58,58 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.adhd.routineplanner.alarm.AlarmTone
 import com.adhd.routineplanner.alarm.AlarmToneOption
+import com.adhd.routineplanner.alarm.Vibration
 import com.adhd.routineplanner.data.AlarmSettings
+import com.adhd.routineplanner.data.VibrationPattern
 import com.adhd.routineplanner.domain.IconKeys
 import com.adhd.routineplanner.domain.StockTask
+import com.adhd.routineplanner.domain.StockTaskCatalog
 import com.adhd.routineplanner.domain.TimeParts
+import com.adhd.routineplanner.ui.common.AppSwitch
+import com.adhd.routineplanner.ui.common.AppTopBar
+import com.adhd.routineplanner.ui.common.OptionChips
+import com.adhd.routineplanner.ui.common.StockTaskChip
+import com.adhd.routineplanner.ui.common.SettingRow
+import com.adhd.routineplanner.ui.common.SettingsCard
+import com.adhd.routineplanner.ui.common.SettingsDivider
+import com.adhd.routineplanner.ui.common.SettingsSectionHeader
+import com.adhd.routineplanner.ui.common.nearestIndex
+import com.adhd.routineplanner.ui.common.toChip
 import com.adhd.routineplanner.ui.plan.DurationWheels
+import com.adhd.routineplanner.ui.routines.AlarmSetupCard
+import com.adhd.routineplanner.ui.theme.Accent
 import com.adhd.routineplanner.ui.theme.AdhdRoutineAppTheme
+import com.adhd.routineplanner.ui.theme.AppTheme
 import com.adhd.routineplanner.ui.theme.Background
+import com.adhd.routineplanner.ui.theme.GridLine
 import com.adhd.routineplanner.ui.theme.SelectionOutline
 import com.adhd.routineplanner.ui.theme.StockTaskColors
 import com.adhd.routineplanner.ui.theme.Surface
 import com.adhd.routineplanner.ui.theme.TextPrimary
 import com.adhd.routineplanner.ui.theme.TextSecondary
 import com.adhd.routineplanner.viewmodel.SettingsViewModel
-import kotlin.math.roundToInt
 
 /**
  * Settings (spec §15.12).
  *
- * A plain list of settings, the first of which is the stock task library. Stock
- * tasks are the reusable pieces a routine is built from — shower, get dressed,
- * breakfast — and they appear as one-tap presets in the add-task dialog of the
- * routine creation and editing screens.
+ * One page of sections, in the order a morning actually happens:
  *
- * The user can add, edit and delete as many as they like; the list is theirs,
- * so deleting everything is allowed and is not undone by a re-seed.
+ *  1. **Appearance** — which palette the app sits in (see [AppTheme]).
+ *  2. **Alarm** — the tone, how loud it is and how long it rings.
+ *  3. **Vibration** — whether it buzzes, the rhythm, and how hard.
+ *  4. **Lock screen** — the takeover switch (plans/accountability-lockscreen.md).
+ *  5. **Alarm setup** — the permissions that decide whether an alarm fires.
+ *  6. **Stock tasks** — the reusable pieces a routine is built from.
+ *
+ * Alarm setup used to be a separate screen behind a menu item, which split the
+ * alarm story across two pages: the things that decide whether an alarm fires
+ * lived apart from the things that decide how it sounds. They are both here now.
+ *
+ * Numbers are kept out of the UI. Volume, ring length and buzz strength are
+ * stored as continuous values but offered as three or four plain words, because
+ * nobody can hear the difference between 68% and 72%, and a percentage read-out
+ * makes a calm page look like a mixing desk.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
@@ -97,6 +117,7 @@ fun SettingsScreen(
 ) {
     val stockTasks by viewModel.stockTasks.collectAsStateWithLifecycle()
     val alarmSettings by viewModel.alarmSettings.collectAsStateWithLifecycle()
+    val theme by viewModel.theme.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf<StockTask?>(null) }
     var adding by remember { mutableStateOf(false) }
     var pickingTone by remember { mutableStateOf(false) }
@@ -104,8 +125,9 @@ fun SettingsScreen(
     Scaffold(
         containerColor = Background,
         topBar = {
-            TopAppBar(
-                title = { Text("Settings", color = TextPrimary) },
+            AppTopBar(
+                title = "Settings",
+                subtitle = "Sound, alarms and tasks",
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
@@ -115,7 +137,6 @@ fun SettingsScreen(
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Background),
             )
         },
     ) { innerPadding ->
@@ -123,121 +144,114 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
+            // --- Appearance ------------------------------------------------
             item {
-                Text(
-                    text = "Alarm",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = TextPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "How the app gets your attention when a task starts.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-                Spacer(Modifier.height(8.dp))
-            }
-
-            item {
-                AlarmSettingsCard(
-                    settings = alarmSettings,
-                    onPickTone = { pickingTone = true },
-                    onVolumeChange = viewModel::setAlarmVolume,
-                    onVibrateChange = viewModel::setAlarmVibrate,
-                    onDurationChange = viewModel::setAlarmDurationSeconds,
-                    onAlarmStrengthChange = viewModel::setAlarmVibrationStrength,
-                    onTaskStrengthChange = viewModel::setTaskVibrationStrength,
-                    onTonePreviewChange = viewModel::setTonePreviewEnabled,
-                )
-            }
-
-            item {
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "Accountability",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = TextPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "Extra friction so you pick up your phone and see the routine.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-                Spacer(Modifier.height(8.dp))
-            }
-
-            item {
-                TakeoverSettingsCard(
-                    enabled = alarmSettings.takeoverEnabled,
-                    onEnabledChange = viewModel::setTakeoverEnabled,
-                )
-            }
-
-            item {
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "Stock tasks",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = TextPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = "Reusable tasks offered when you add a task to a routine.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-                Spacer(Modifier.height(8.dp))
-            }
-
-            if (stockTasks.isEmpty()) {
-                item {
-                    Text(
-                        text = "No stock tasks. Add one below.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                        modifier = Modifier.padding(vertical = 8.dp),
+                Column {
+                    SettingsSectionHeader(
+                        title = "Appearance",
+                        subtitle = "The light the app sits in.",
                     )
-                }
-            } else {
-                items(stockTasks, key = { it.id }) { task ->
-                    StockTaskRow(
-                        task = task,
-                        onClick = { editing = task },
-                        onDelete = { viewModel.delete(task.id) },
+                    Spacer(Modifier.height(10.dp))
+                    AppearanceSectionCard(
+                        selected = theme,
+                        onSelect = viewModel::setTheme,
                     )
                 }
             }
 
+            // --- Alarm -----------------------------------------------------
             item {
-                Spacer(Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Surface)
-                        .clickable { adding = true }
-                        .padding(horizontal = 12.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Add,
-                        contentDescription = null,
-                        tint = TextPrimary,
-                        modifier = Modifier.size(20.dp),
+                Column {
+                    SettingsSectionHeader(
+                        title = "Alarm",
+                        subtitle = "What a task alarm sounds like.",
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "Add stock task",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextPrimary,
+                    Spacer(Modifier.height(10.dp))
+                    AlarmSectionCard(
+                        settings = alarmSettings,
+                        onPickTone = { pickingTone = true },
+                        onTonePreviewChange = viewModel::setTonePreviewEnabled,
+                        onVolumeChange = viewModel::setAlarmVolume,
+                        onDurationChange = viewModel::setAlarmDurationSeconds,
                     )
+                }
+            }
+
+            // --- Vibration -------------------------------------------------
+            item {
+                Column {
+                    SettingsSectionHeader(
+                        title = "Vibration",
+                        subtitle = "How the phone buzzes, and how hard.",
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    VibrationSectionCard(
+                        settings = alarmSettings,
+                        onVibrateChange = viewModel::setAlarmVibrate,
+                        onPatternChange = viewModel::setVibrationPattern,
+                        onAlarmStrengthChange = viewModel::setAlarmVibrationStrength,
+                        onTaskStrengthChange = viewModel::setTaskVibrationStrength,
+                    )
+                }
+            }
+
+            // --- Lock screen -----------------------------------------------
+            item {
+                Column {
+                    SettingsSectionHeader(
+                        title = "Lock screen",
+                        subtitle = "Extra friction so you actually see the routine.",
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    SettingsCard {
+                        SettingRow(
+                            title = "Take over the lock screen",
+                            subtitle = "While a routine runs, turning the screen on shows " +
+                                "the routine instead of your lock screen. Swipe it away " +
+                                "to use your phone as normal.",
+                            trailing = {
+                                SettingsSwitch(
+                                    checked = alarmSettings.takeoverEnabled,
+                                    onCheckedChange = viewModel::setTakeoverEnabled,
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+
+            // --- Alarm setup (permissions) ---------------------------------
+            item {
+                Column {
+                    SettingsSectionHeader(
+                        title = "Alarm setup",
+                        subtitle = "The handful of permissions an alarm needs to fire on time.",
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    AlarmSetupCard()
+                }
+            }
+
+            // --- Stock tasks -----------------------------------------------
+            item {
+                Column {
+                    SettingsSectionHeader(
+                        title = "Stock tasks",
+                        subtitle = "Reusable tasks offered when you add a task to a routine.",
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    SettingsCard {
+                        StockTaskGrid(
+                            stockTasks = stockTasks,
+                            onEdit = { editing = it },
+                            onDelete = { viewModel.delete(it) },
+                        )
+                        SettingsDivider()
+                        AddStockTaskRow(onClick = { adding = true })
+                    }
                 }
             }
         }
@@ -248,8 +262,9 @@ fun SettingsScreen(
             selectedUri = alarmSettings.toneUri,
             previewEnabled = alarmSettings.tonePreviewEnabled,
             onConfirm = { option ->
+                // Selecting a tone keeps the dialog open so the user can
+                // audition several; the preview plays on each tap.
                 viewModel.setAlarmTone(option.uri, option.title)
-                pickingTone = false
             },
             onDismiss = { pickingTone = false },
         )
@@ -279,264 +294,292 @@ fun SettingsScreen(
     }
 }
 
+// --- value maps ------------------------------------------------------------
+//
+// Each stored setting is continuous, each control is three or four words. The
+// chip label list and the value list are kept side by side so a mapping can be
+// read in one glance, and `nearestIndex` decides which chip a stored value
+// corresponds to. An existing 0.8f volume lands on "Balanced", not on nothing.
+
+private val LOUDNESS_LABELS = listOf("Quiet", "Balanced", "Loud")
+private val LOUDNESS_VALUES = listOf(0.35f, 0.7f, 1f)
+
+private val RING_LABELS = listOf("Short", "Medium", "Long", "Max")
+private val RING_VALUES = listOf(5, 10, 20, 30)
+private val RING_VALUES_F = RING_VALUES.map { it.toFloat() }
+
+private val BUZZ_LABELS = listOf("Gentle", "Medium", "Strong")
+private val BUZZ_VALUES = listOf(0.35f, 0.65f, 1f)
+
 /**
- * The alarm preferences card: tone, volume, vibration and ring duration.
+ * The appearance picker: one tile per [AppTheme], in two columns.
  *
- * All four are app-wide. The tone row opens a picker; the two sliders write
- * straight through to the store on every change, which is cheap because
- * DataStore batches writes and the alarm only reads the value when it fires.
+ * Each tile is drawn in *its own* palette rather than the active one, so the
+ * choice is a preview rather than a swatch — a light theme's tile is genuinely
+ * pale even while the app is dark. The selected tile carries an accent ring and
+ * a tick, which stay legible whichever way the user is moving.
  */
 @Composable
-private fun AlarmSettingsCard(
-    settings: AlarmSettings,
-    onPickTone: () -> Unit,
-    onVolumeChange: (Float) -> Unit,
-    onVibrateChange: (Boolean) -> Unit,
-    onDurationChange: (Int) -> Unit,
-    onAlarmStrengthChange: (Float) -> Unit,
-    onTaskStrengthChange: (Float) -> Unit,
-    onTonePreviewChange: (Boolean) -> Unit,
+private fun AppearanceSectionCard(
+    selected: AppTheme,
+    onSelect: (AppTheme) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(Surface)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-    ) {
-        // --- Tone ----------------------------------------------------
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-                .clickable(onClick = onPickTone)
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    SettingsCard {
+        Column(
+            modifier = Modifier.padding(vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = "Tone",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = TextPrimary,
-                )
-                Text(
-                    text = settings.toneName?.takeIf { it.isNotBlank() }
-                        ?: AlarmTone.DEFAULT_TITLE,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
+            AppTheme.entries.chunked(2).forEach { pair ->
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    pair.forEach { theme ->
+                        ThemeTile(
+                            theme = theme,
+                            selected = theme == selected,
+                            onSelect = { onSelect(theme) },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    // Keeps a lone final tile the same width as the rest.
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
+                }
             }
-            Text(
-                text = "Change",
-                style = MaterialTheme.typography.labelMedium,
-                color = TextPrimary,
-            )
         }
-
-        Spacer(Modifier.height(8.dp))
-
-        // --- Tone preview --------------------------------------------
-        // Plays a short, quiet sample of each tone as it is tapped in the
-        // picker, so the user can hear what they are choosing. Off for anyone
-        // who finds it distracting.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = "Preview tones",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = TextPrimary,
-                )
-                Text(
-                    text = "Play a quiet sample when you tap a tone in the picker.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-            }
-            Switch(
-                checked = settings.tonePreviewEnabled,
-                onCheckedChange = onTonePreviewChange,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Background,
-                    checkedTrackColor = TextPrimary,
-                ),
-            )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        // --- Volume --------------------------------------------------
-        Text(
-            text = "Volume · ${(settings.volume * 100).roundToInt()}%",
-            style = MaterialTheme.typography.bodyLarge,
-            color = TextPrimary,
-        )
-        Slider(
-            value = settings.volume,
-            onValueChange = onVolumeChange,
-            valueRange = 0f..1f,
-            colors = SliderDefaults.colors(
-                thumbColor = TextPrimary,
-                activeTrackColor = TextPrimary,
-                inactiveTrackColor = TextSecondary.copy(alpha = 0.3f),
-            ),
-        )
-
-        Spacer(Modifier.height(4.dp))
-
-        // --- Duration ------------------------------------------------
-        Text(
-            text = "Ring for ${settings.durationSeconds}s",
-            style = MaterialTheme.typography.bodyLarge,
-            color = TextPrimary,
-        )
-        Slider(
-            value = settings.durationSeconds.toFloat(),
-            onValueChange = { onDurationChange(it.roundToInt()) },
-            valueRange = AlarmSettings.MIN_DURATION_SECONDS.toFloat()..
-                AlarmSettings.MAX_DURATION_SECONDS.toFloat(),
-            steps = AlarmSettings.MAX_DURATION_SECONDS -
-                AlarmSettings.MIN_DURATION_SECONDS - 1,
-            colors = SliderDefaults.colors(
-                thumbColor = TextPrimary,
-                activeTrackColor = TextPrimary,
-                inactiveTrackColor = TextSecondary.copy(alpha = 0.3f),
-            ),
-        )
-
-        Spacer(Modifier.height(4.dp))
-
-        // --- Vibrate -------------------------------------------------
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = "Vibrate",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = TextPrimary,
-                )
-                Text(
-                    text = "Buzz alongside the tone",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary,
-                )
-            }
-            Switch(
-                checked = settings.vibrate,
-                onCheckedChange = onVibrateChange,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Background,
-                    checkedTrackColor = TextPrimary,
-                ),
-            )
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        // --- Alarm vibration strength --------------------------------
-        // Only meaningful when vibration is on, so it is dimmed otherwise.
-        val strengthAlpha = if (settings.vibrate) 1f else 0.4f
-        Text(
-            text = "Alarm vibration · ${(settings.alarmVibrationStrength * 100).roundToInt()}%",
-            style = MaterialTheme.typography.bodyLarge,
-            color = TextPrimary.copy(alpha = strengthAlpha),
-        )
-        Text(
-            text = "How hard the phone buzzes for a task alarm. 100% is a solid, " +
-                "unbroken buzz at full power.",
-            style = MaterialTheme.typography.bodySmall,
-            color = TextSecondary.copy(alpha = strengthAlpha),
-        )
-        Slider(
-            value = settings.alarmVibrationStrength,
-            onValueChange = onAlarmStrengthChange,
-            enabled = settings.vibrate,
-            valueRange = AlarmSettings.MIN_VIBRATION_STRENGTH..
-                AlarmSettings.MAX_VIBRATION_STRENGTH,
-            colors = SliderDefaults.colors(
-                thumbColor = TextPrimary,
-                activeTrackColor = TextPrimary,
-                inactiveTrackColor = TextSecondary.copy(alpha = 0.3f),
-            ),
-        )
-
-        Spacer(Modifier.height(4.dp))
-
-        // --- Task / notification vibration strength ------------------
-        Text(
-            text = "Task vibration · ${(settings.taskVibrationStrength * 100).roundToInt()}%",
-            style = MaterialTheme.typography.bodyLarge,
-            color = TextPrimary,
-        )
-        Text(
-            text = "How hard the phone buzzes when a task changes or a run starts.",
-            style = MaterialTheme.typography.bodySmall,
-            color = TextSecondary,
-        )
-        Slider(
-            value = settings.taskVibrationStrength,
-            onValueChange = onTaskStrengthChange,
-            valueRange = AlarmSettings.MIN_VIBRATION_STRENGTH..
-                AlarmSettings.MAX_VIBRATION_STRENGTH,
-            colors = SliderDefaults.colors(
-                thumbColor = TextPrimary,
-                activeTrackColor = TextPrimary,
-                inactiveTrackColor = TextSecondary.copy(alpha = 0.3f),
-            ),
-        )
     }
 }
 
 /**
- * The accountability card: a single switch for the lock-screen takeover
- * (plans/accountability-lockscreen.md).
- *
- * When on, the ongoing run notification carries a full-screen intent, so
- * turning the screen on during a run shows the routine over the lock screen
- * instead of the normal lock screen. The user can always swipe it away; it is
- * friction and a reminder, not a lock.
+ * One theme preview: a miniature page (accent rule, two lines of "text", the
+ * red eye) drawn in that theme's own colours, with its name underneath.
  */
 @Composable
-private fun TakeoverSettingsCard(
-    enabled: Boolean,
-    onEnabledChange: (Boolean) -> Unit,
+private fun ThemeTile(
+    theme: AppTheme,
+    selected: Boolean,
+    onSelect: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(Surface)
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = "Take over the lock screen",
-                style = MaterialTheme.typography.bodyLarge,
-                color = TextPrimary,
+    val palette = theme.palette
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(palette.surface)
+            .border(
+                width = if (selected) 2.dp else 1.dp,
+                color = if (selected) palette.accent else palette.gridLine,
+                shape = RoundedCornerShape(16.dp),
             )
-            Text(
-                text = "While a routine runs, turning the screen on shows the " +
-                    "routine instead of your lock screen. Swipe it away to use " +
-                    "your phone as normal.",
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
+            .clickable(onClick = onSelect)
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(palette.background)
+                .padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .width(6.dp)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(palette.accent),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(0.85f)
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(palette.textPrimary),
+                )
+                Box(
+                    Modifier
+                        .fillMaxWidth(0.55f)
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(palette.textSecondary),
+                )
+            }
+            Box(
+                Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(palette.countdownRed),
             )
         }
-        Spacer(Modifier.width(12.dp))
-        Switch(
-            checked = enabled,
-            onCheckedChange = onEnabledChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Background,
-                checkedTrackColor = TextPrimary,
-            ),
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = theme.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = palette.textPrimary,
+                )
+                Text(
+                    text = theme.description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = palette.textSecondary,
+                )
+            }
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = "Selected",
+                    tint = palette.accent,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A switch styled for the active palette.
+ *
+ * Kept as a thin local alias so the settings page reads the same as before;
+ * the colours themselves come from [AppSwitch], which every other switch in the
+ * app now uses too, so "on" looks identical wherever it appears.
+ */
+@Composable
+private fun SettingsSwitch(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true,
+) {
+    AppSwitch(
+        checked = checked,
+        onCheckedChange = onCheckedChange,
+        enabled = enabled,
+    )
+}
+
+/** Tone, tone preview, loudness and ring length. */
+@Composable
+private fun AlarmSectionCard(
+    settings: AlarmSettings,
+    onPickTone: () -> Unit,
+    onTonePreviewChange: (Boolean) -> Unit,
+    onVolumeChange: (Float) -> Unit,
+    onDurationChange: (Int) -> Unit,
+) {
+    SettingsCard {
+        SettingRow(
+            title = "Tone",
+            subtitle = settings.toneName?.takeIf { it.isNotBlank() }
+                ?: AlarmTone.DEFAULT_TITLE,
+            onClick = onPickTone,
+            trailing = {
+                Text(
+                    text = "Change",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Accent,
+                )
+            },
+        )
+        SettingsDivider()
+        SettingRow(
+            title = "Preview tones",
+            subtitle = "Hear a quiet sample as you browse the list.",
+            trailing = {
+                SettingsSwitch(
+                    checked = settings.tonePreviewEnabled,
+                    onCheckedChange = onTonePreviewChange,
+                )
+            },
+        )
+        SettingsDivider()
+        OptionChips(
+            title = "Loudness",
+            subtitle = "Quiet is a nudge. Loud is a fire alarm.",
+            options = LOUDNESS_LABELS,
+            selectedIndex = nearestIndex(settings.volume, LOUDNESS_VALUES),
+            onSelect = { onVolumeChange(LOUDNESS_VALUES[it]) },
+        )
+        SettingsDivider()
+        OptionChips(
+            title = "Ring for",
+            subtitle = "How long it keeps going before it gives up.",
+            options = RING_LABELS,
+            selectedIndex = nearestIndex(settings.durationSeconds.toFloat(), RING_VALUES_F),
+            onSelect = { onDurationChange(RING_VALUES[it]) },
         )
     }
+}
+
+/** Vibrate switch, pattern and the two strengths. */
+@Composable
+private fun VibrationSectionCard(
+    settings: AlarmSettings,
+    onVibrateChange: (Boolean) -> Unit,
+    onPatternChange: (VibrationPattern) -> Unit,
+    onAlarmStrengthChange: (Float) -> Unit,
+    onTaskStrengthChange: (Float) -> Unit,
+) {
+    val context = LocalContext.current
+    val patterns = VibrationPattern.entries
+    SettingsCard {
+        SettingRow(
+            title = "Vibrate",
+            subtitle = "Buzz alongside the tone.",
+            trailing = {
+                SettingsSwitch(
+                    checked = settings.vibrate,
+                    onCheckedChange = onVibrateChange,
+                )
+            },
+        )
+        SettingsDivider()
+        OptionChips(
+            title = "Pattern",
+            subtitle = "The rhythm of the buzz.",
+            options = patterns.map { vibrationPatternLabel(it) },
+            selectedIndex = patterns.indexOf(settings.vibrationPattern),
+            enabled = settings.vibrate,
+            onSelect = { index ->
+                val pattern = patterns[index]
+                onPatternChange(pattern)
+                // Buzz a one-off sample at the strength the pattern will
+                // actually run at, so the choice is felt rather than read.
+                Vibration.preview(
+                    context = context,
+                    strength = settings.alarmVibrationStrength,
+                    pattern = pattern,
+                )
+            },
+        )
+        SettingsDivider()
+        OptionChips(
+            title = "Alarm buzz",
+            subtitle = "How hard it buzzes for a task alarm.",
+            options = BUZZ_LABELS,
+            selectedIndex = nearestIndex(settings.alarmVibrationStrength, BUZZ_VALUES),
+            enabled = settings.vibrate,
+            onSelect = { onAlarmStrengthChange(BUZZ_VALUES[it]) },
+        )
+        SettingsDivider()
+        OptionChips(
+            title = "Task buzz",
+            subtitle = "How hard it buzzes when a task changes or a run starts.",
+            options = BUZZ_LABELS,
+            selectedIndex = nearestIndex(settings.taskVibrationStrength, BUZZ_VALUES),
+            onSelect = { onTaskStrengthChange(BUZZ_VALUES[it]) },
+        )
+    }
+}
+
+/** Human-readable label for a [VibrationPattern] chip. */
+private fun vibrationPatternLabel(pattern: VibrationPattern): String = when (pattern) {
+    VibrationPattern.Solid -> "Solid"
+    VibrationPattern.Pulse -> "Pulse"
+    VibrationPattern.Heartbeat -> "Heartbeat"
+    VibrationPattern.Escalating -> "Escalating"
 }
 
 /**
@@ -546,11 +589,11 @@ private fun TakeoverSettingsCard(
  * [AlarmTone.available] runs a `RingtoneManager` cursor. Until it arrives the
  * dialog shows a short "Loading" line rather than an empty list.
  *
- * Tapping a row *selects* it and closes the dialog, as before. When
- * [previewEnabled] is on, tapping also plays a short, quiet sample of the tone
- * first (via [AlarmTone.preview]) so the user hears what they picked. The
- * sample is stopped when the dialog closes, so nothing keeps playing
- * afterwards.
+ * Tapping a row *selects* it and keeps the dialog open, so the user can
+ * audition several tones before settling on one. When [previewEnabled] is on,
+ * tapping plays a short, quiet sample of the tone (via [AlarmTone.preview]),
+ * capped at three seconds. The sample is stopped when the dialog closes, so
+ * nothing keeps playing afterwards.
  */
 @Composable
 private fun AlarmToneDialog(
@@ -564,11 +607,23 @@ private fun AlarmToneDialog(
     // The currently-playing preview, so a second tap stops the first sample
     // rather than layering two tones on top of each other.
     var previewPlayer by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+    // Bumped on every tap so the auto-stop coroutine below restarts its timer
+    // for the newest sample instead of cutting a later one short.
+    var previewToken by remember { mutableStateOf(0) }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
         options = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             AlarmTone.available(context)
         }
+    }
+
+    // Cap every preview at three seconds. Keyed on the token so each new tap
+    // cancels the previous timer and starts a fresh one for the new sample.
+    androidx.compose.runtime.LaunchedEffect(previewToken) {
+        if (previewToken == 0) return@LaunchedEffect
+        kotlinx.coroutines.delay(AlarmTone.PREVIEW_MAX_MS)
+        AlarmTone.stop(previewPlayer)
+        previewPlayer = null
     }
 
     // Stop the preview when the dialog leaves the composition (confirm or
@@ -609,13 +664,21 @@ private fun AlarmToneDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(RoundedCornerShape(12.dp))
                                 .background(if (selected) Background else Color.Transparent)
                                 .clickable {
+                                    // Preview on tap, but do *not* close the
+                                    // dialog: the user needs to hear several
+                                    // tones to compare them, and a picker that
+                                    // vanishes on the first tap makes that
+                                    // impossible. The row is marked "Selected"
+                                    // and the dialog is closed with "Close".
                                     if (previewEnabled) {
                                         // Replace any sample already playing.
                                         AlarmTone.stop(previewPlayer)
                                         previewPlayer = AlarmTone.preview(context, option.uri)
+                                        // Restart the three-second cap for this sample.
+                                        previewToken++
                                     }
                                     onConfirm(option)
                                 }
@@ -626,10 +689,13 @@ private fun AlarmToneDialog(
                                 text = option.title,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = if (selected) TextPrimary else TextSecondary,
+                                // Selection is carried by weight *and* colour,
+                                // but both tones stay on the light side of the
+                                // ladder so the list does not shout.
                                 fontWeight = if (selected) {
-                                    FontWeight.SemiBold
+                                    FontWeight.Medium
                                 } else {
-                                    FontWeight.Normal
+                                    FontWeight.Light
                                 },
                                 modifier = Modifier.weight(1f),
                             )
@@ -637,7 +703,7 @@ private fun AlarmToneDialog(
                                 Text(
                                     text = "Selected",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = TextPrimary,
+                                    color = Accent,
                                 )
                             }
                         }
@@ -653,60 +719,82 @@ private fun AlarmToneDialog(
     )
 }
 
-/** One stock task: its icon, name, duration and a delete button. */
+/**
+ * The stock tasks as a wrapping flow of chips: the same chip the create flow's
+ * task step uses, so the two screens read as one app rather than two lists.
+ *
+ * The built-in tasks come first and cannot be removed — they are part of the app,
+ * not the user's data. Their own tasks follow and carry a small cross. Tapping any
+ * chip opens the editor.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun StockTaskRow(
-    task: StockTask,
-    onClick: () -> Unit,
-    onDelete: () -> Unit,
+private fun StockTaskGrid(
+    stockTasks: List<StockTask>,
+    onEdit: (StockTask) -> Unit,
+    onDelete: (StockTask) -> Unit,
 ) {
+    if (stockTasks.isEmpty()) {
+        Text(
+            text = "No stock tasks yet.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = TextSecondary,
+            modifier = Modifier.padding(vertical = 16.dp),
+        )
+        return
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 14.dp, bottom = 8.dp),
+    ) {
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            stockTasks.forEach { task ->
+                val remove: (() -> Unit)? =
+                    if (StockTaskCatalog.isBuiltIn(task)) null else { { onDelete(task) } }
+                StockTaskChip(
+                    chip = task.toChip(),
+                    onClick = { onEdit(task) },
+                    onDelete = remove,
+                )
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = "Tap a task to change it. Only the ones you add yourself can be removed.",
+            style = MaterialTheme.typography.labelSmall,
+            color = TextSecondary,
+        )
+    }
+}
+
+/** The "Add stock task" row at the foot of the stock task card. */
+@Composable
+private fun AddStockTaskRow(onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(Surface)
+            .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+            .padding(vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(CircleShape)
-                .background(Color(task.color).copy(alpha = 0.22f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                imageVector = StockTaskIcons.iconFor(task.icon),
-                contentDescription = null,
-                tint = Color(task.color),
-                modifier = Modifier.size(18.dp),
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(
-                text = task.name,
-                style = MaterialTheme.typography.bodyLarge,
-                color = TextPrimary,
-                fontWeight = FontWeight.Medium,
-            )
-            Text(
-                text = buildString {
-                    append("${task.minutes} min")
-                    if (task.alarmEnabled) append(" · alarm")
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary,
-            )
-        }
-        IconButton(onClick = onDelete) {
-            Icon(
-                imageVector = Icons.Filled.Delete,
-                contentDescription = "Delete ${task.name}",
-                tint = TextSecondary,
-            )
-        }
+        Icon(
+            imageVector = Icons.Filled.Add,
+            contentDescription = null,
+            tint = Accent,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = "Add stock task",
+            style = MaterialTheme.typography.bodyLarge,
+            color = Accent,
+        )
     }
 }
 
@@ -735,6 +823,11 @@ private fun StockTaskDialog(
     val minutes = parts.totalMinutes.coerceIn(1, MAX_STOCK_MINUTES)
     val nameValid = name.trim().isNotEmpty()
 
+    // A built-in task is identified by its name, so renaming one would leave the
+    // catalogue entry behind and look like the task had been duplicated. Its
+    // name is therefore fixed; duration, colour, icon and alarm stay editable.
+    val builtIn = initial != null && StockTaskCatalog.isBuiltIn(initial)
+
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Surface,
@@ -761,7 +854,7 @@ private fun StockTaskDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Background, RoundedCornerShape(8.dp))
+                        .background(Background, RoundedCornerShape(12.dp))
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
                     if (name.isEmpty()) {
@@ -772,7 +865,8 @@ private fun StockTaskDialog(
                     }
                     BasicTextField(
                         value = name,
-                        onValueChange = { name = it },
+                        onValueChange = { if (!builtIn) name = it },
+                        enabled = !builtIn,
                         singleLine = true,
                         textStyle = TextStyle(
                             color = TextPrimary,
@@ -781,6 +875,15 @@ private fun StockTaskDialog(
                         ),
                         cursorBrush = SolidColor(TextPrimary),
                         modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (builtIn) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = "Built-in tasks keep their name. You can still change " +
+                            "the duration, colour, icon and alarm.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = TextSecondary,
                     )
                 }
 
@@ -793,7 +896,9 @@ private fun StockTaskDialog(
                     color = TextSecondary,
                 )
                 Spacer(Modifier.height(8.dp))
-                IconKeys.ALL.chunked(5).forEach { rowKeys ->
+                // Four per row: the labels sit in narrow cells, so five
+                // would start truncating words like "Medicine".
+                IconKeys.ALL.chunked(4).forEach { rowKeys ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -803,8 +908,8 @@ private fun StockTaskDialog(
                             Column(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (selected) TextPrimary else Background)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (selected) Accent else Background)
                                     .clickable {
                                         haptics.performHapticFeedback(
                                             HapticFeedbackType.TextHandleMove,
@@ -856,7 +961,11 @@ private fun StockTaskDialog(
                                     .background(stock, CircleShape)
                                     .border(
                                         width = if (selected) 2.dp else 0.dp,
-                                        color = if (selected) SelectionOutline else Color.Transparent,
+                                        color = if (selected) {
+                                            SelectionOutline
+                                        } else {
+                                            Color.Transparent
+                                        },
                                         shape = CircleShape,
                                     )
                                     .clickable {
@@ -905,13 +1014,9 @@ private fun StockTaskDialog(
                             color = TextSecondary,
                         )
                     }
-                    Switch(
+                    SettingsSwitch(
                         checked = alarmEnabled,
                         onCheckedChange = { alarmEnabled = it },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Background,
-                            checkedTrackColor = TextPrimary,
-                        ),
                     )
                 }
             }
@@ -936,7 +1041,7 @@ private fun StockTaskDialog(
             ) {
                 Text(
                     text = if (initial == null) "Add" else "Save",
-                    color = if (nameValid) TextPrimary else TextSecondary,
+                    color = if (nameValid) Accent else TextSecondary,
                 )
             }
         },
@@ -951,34 +1056,82 @@ private fun StockTaskDialog(
 /** Longest default duration a stock task may have. */
 private const val MAX_STOCK_MINUTES: Int = 240
 
-@Preview(name = "Settings", showBackground = true, backgroundColor = 0xFF0E0F12)
+@Preview(name = "Settings", showBackground = true, backgroundColor = 0xFF0A1116)
 @Composable
 private fun SettingsPreview() {
     AdhdRoutineAppTheme {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            StockTaskRow(
-                task = StockTask(
-                    id = 1,
-                    name = "Shower",
-                    minutes = 10,
-                    color = 0xFF4F8EF7.toInt(),
-                    icon = IconKeys.SHOWER,
-                ),
-                onClick = {},
-                onDelete = {},
-            )
-            StockTaskRow(
-                task = StockTask(
-                    id = 2,
-                    name = "Wake up",
-                    minutes = 1,
-                    color = 0xFFF2C94C.toInt(),
-                    icon = IconKeys.ALARM,
-                    alarmEnabled = true,
-                ),
-                onClick = {},
-                onDelete = {},
-            )
+        Column(
+            Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Column {
+                SettingsSectionHeader(
+                    title = "Alarm",
+                    subtitle = "What a task alarm sounds like.",
+                )
+                Spacer(Modifier.height(10.dp))
+                SettingsCard {
+                    SettingRow(
+                        title = "Tone",
+                        subtitle = "Loon (default)",
+                        onClick = {},
+                        trailing = {
+                            Text(
+                                text = "Change",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = Accent,
+                            )
+                        },
+                    )
+                    SettingsDivider()
+                    OptionChips(
+                        title = "Loudness",
+                        subtitle = "Quiet is a nudge. Loud is a fire alarm.",
+                        options = LOUDNESS_LABELS,
+                        selectedIndex = 1,
+                        onSelect = {},
+                    )
+                }
+            }
+            Column {
+                SettingsSectionHeader(
+                    title = "Stock tasks",
+                    subtitle = "Reusable tasks offered when you add a task to a routine.",
+                )
+                Spacer(Modifier.height(10.dp))
+                SettingsCard {
+                    StockTaskGrid(
+                        stockTasks = listOf(
+                            StockTask(
+                                id = 1,
+                                name = "Wake up",
+                                minutes = 1,
+                                color = 0xFFC9B37E.toInt(),
+                                icon = IconKeys.ALARM,
+                                alarmEnabled = true,
+                            ),
+                            StockTask(
+                                id = 2,
+                                name = "Shower",
+                                minutes = 10,
+                                color = 0xFF8FA9CF.toInt(),
+                                icon = IconKeys.SHOWER,
+                            ),
+                            StockTask(
+                                id = 3,
+                                name = "Take vitamins",
+                                minutes = 2,
+                                color = 0xFF87BFA6.toInt(),
+                                icon = IconKeys.TASK,
+                            ),
+                        ),
+                        onEdit = {},
+                        onDelete = {},
+                    )
+                    SettingsDivider()
+                    AddStockTaskRow(onClick = {})
+                }
+            }
         }
     }
 }

@@ -7,6 +7,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import android.util.Log
+import com.adhd.routineplanner.data.VibrationPattern
 
 /**
  * One place that knows how to buzz the phone, so every vibration in the app
@@ -55,6 +56,13 @@ object Vibration {
      */
     private const val TASK_CUE_DURATION_MS: Long = 1_500L
 
+    /**
+     * How long the "Solid" pattern buzzes in a settings preview: 600 ms. Long
+     * enough to feel the character of a solid buzz, short enough that tapping
+     * through the chips does not become a drone.
+     */
+    private const val PREVIEW_SOLID_MS: Long = 600L
+
     /** The vibrator, or `null` when the device has none. */
     private fun vibrator(context: Context): Vibrator? {
         val service = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -85,6 +93,93 @@ object Vibration {
         } catch (t: Throwable) {
             Log.w(TAG, "Could not run a solid vibration", t)
         }
+    }
+
+    /**
+     * Plays the alarm's buzz in the user's chosen [pattern] for [durationMs], at
+     * [strength] (0f..1f).
+     *
+     * This is the alarm's vibration entry point. [VibrationPattern.Solid] is the
+     * original single unbroken buzz; the other patterns are waveforms that
+     * repeat for the whole duration so the buzz keeps going until the alarm
+     * stops, exactly like the solid version. Every pattern is tagged as an
+     * alarm-class vibration (see [vibrate]) so it is never suppressed while the
+     * run notification is on screen.
+     */
+    fun alarm(context: Context, durationMs: Long, strength: Float, pattern: VibrationPattern) {
+        if (pattern == VibrationPattern.Solid) {
+            solid(context, durationMs, strength)
+            return
+        }
+        val service = vibrator(context) ?: return
+        val amplitude = amplitudeFor(service, strength)
+        try {
+            service.cancel()
+            val (timings, amplitudes) = waveformFor(pattern, amplitude)
+            // Repeat from index 0 until cancelled: the alarm stops the vibration
+            // itself when its duration elapses, so an endless repeat is correct.
+            vibrate(service, VibrationEffect.createWaveform(timings, amplitudes, 0))
+        } catch (t: Throwable) {
+            Log.w(TAG, "Could not run a patterned vibration", t)
+        }
+    }
+
+    /**
+     * Plays a short, one-off sample of [pattern] at [strength] (0f..1f) so the
+     * user can feel what a rhythm is like before choosing it in settings.
+     *
+     * Unlike [alarm], this does **not** repeat: it plays exactly one cycle of
+     * the pattern and stops, which is what a preview should do. [Solid] is a
+     * single short buzz rather than the full alarm-length one.
+     */
+    fun preview(context: Context, strength: Float, pattern: VibrationPattern) {
+        val service = vibrator(context) ?: return
+        val amplitude = amplitudeFor(service, strength)
+        try {
+            service.cancel()
+            if (pattern == VibrationPattern.Solid) {
+                vibrate(service, VibrationEffect.createOneShot(PREVIEW_SOLID_MS, amplitude))
+                return
+            }
+            val (timings, amplitudes) = waveformFor(pattern, amplitude)
+            // -1 means "do not repeat": one cycle, then stop.
+            vibrate(service, VibrationEffect.createWaveform(timings, amplitudes, -1))
+        } catch (t: Throwable) {
+            Log.w(TAG, "Could not preview a vibration pattern", t)
+        }
+    }
+
+    /**
+     * Builds the on/off timing and amplitude arrays for a non-solid [pattern].
+     *
+     * Timings are in milliseconds and alternate off/on starting with off (the
+     * platform's convention); amplitudes are 0 for the off segments and the
+     * computed [amplitude] for the on segments.
+     */
+    private fun waveformFor(
+        pattern: VibrationPattern,
+        amplitude: Int,
+    ): Pair<LongArray, IntArray> = when (pattern) {
+        // A steady ring: 400ms on, 400ms off.
+        VibrationPattern.Pulse -> Pair(
+            longArrayOf(0L, 400L, 400L),
+            intArrayOf(0, amplitude, 0),
+        )
+        // A heartbeat: two quick thumps, then a longer pause.
+        VibrationPattern.Heartbeat -> Pair(
+            longArrayOf(0L, 120L, 90L, 120L, 600L),
+            intArrayOf(0, amplitude, 0, amplitude, 0),
+        )
+        // An escalating ramp: short buzzes that grow longer, then reset.
+        VibrationPattern.Escalating -> Pair(
+            longArrayOf(0L, 120L, 120L, 200L, 120L, 320L, 120L, 480L, 500L),
+            intArrayOf(0, amplitude, 0, amplitude, 0, amplitude, 0, amplitude, 0),
+        )
+        // Solid is handled before this is called; keep a sane fallback.
+        VibrationPattern.Solid -> Pair(
+            longArrayOf(0L, 1_000L),
+            intArrayOf(0, amplitude),
+        )
     }
 
     /**

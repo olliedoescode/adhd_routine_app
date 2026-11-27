@@ -49,8 +49,8 @@ data class TimeParts(
 
         /**
          * Split [totalMinutes] into hours/minutes/seconds. Seconds are always
-         * zero here because stored durations are whole minutes; the picker can
-         * still add seconds, which are folded back in via [totalMinutes].
+         * zero here because stored durations are whole minutes and the picker
+         * only offers hours and minutes.
          */
         fun fromMinutes(totalMinutes: Int): TimeParts {
             val safe = totalMinutes.coerceAtLeast(0)

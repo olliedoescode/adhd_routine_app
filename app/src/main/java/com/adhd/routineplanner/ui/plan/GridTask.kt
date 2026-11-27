@@ -1,5 +1,6 @@
 package com.adhd.routineplanner.ui.plan
 
+import com.adhd.routineplanner.domain.IconKeys
 import com.adhd.routineplanner.domain.PlacedTask
 
 /**
@@ -18,6 +19,8 @@ data class GridTask(
     /** ARGB colour int. */
     val color: Int,
     val alarmEnabled: Boolean = false,
+    /** Stock-task icon key, so the run screen can show the task's icon. */
+    val icon: String = IconKeys.TASK,
 ) {
     /** The pure-domain view of this task, for [com.adhd.routineplanner.domain.Schedule]. */
     fun toPlacedTask(): PlacedTask = PlacedTask(
@@ -27,6 +30,7 @@ data class GridTask(
         name = name,
         color = color,
         alarmEnabled = alarmEnabled,
+        icon = icon,
     )
 }
 
@@ -39,5 +43,6 @@ fun List<PlacedTask>.toGridTasks(): List<GridTask> = map { task ->
         name = task.name,
         color = task.color,
         alarmEnabled = task.alarmEnabled,
+        icon = task.icon,
     )
 }

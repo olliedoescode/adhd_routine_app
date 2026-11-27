@@ -18,7 +18,6 @@ import androidx.navigation.navArgument
 import com.adhd.routineplanner.domain.PlacedTask
 import com.adhd.routineplanner.ui.plan.PlanScreen
 import com.adhd.routineplanner.ui.routines.DraftTask
-import com.adhd.routineplanner.ui.routines.PermissionChecklistScreen
 import com.adhd.routineplanner.ui.routines.RoutineCreateScreen
 import com.adhd.routineplanner.ui.routines.RoutineListScreen
 import com.adhd.routineplanner.ui.run.RunScreen
@@ -33,7 +32,6 @@ object Routes {
     const val SETTINGS: String = "settings"
     const val PLAN: String = "plan"
     const val RUN: String = "run"
-    const val PERMISSIONS: String = "permissions"
 
     const val ARG_ROUTINE_ID: String = "routineId"
 
@@ -135,15 +133,26 @@ fun AppNavHost(openRunRoutineId: Long? = null) {
                 },
                 onCreateRoutine = { navController.navigate(Routes.ROUTINE_CREATE) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },
-                onOpenPermissions = { navController.navigate(Routes.PERMISSIONS) },
+                // The "in progress" bar jumps straight to the run page.
+                onOpenRun = { routineId ->
+                    navController.navigate(Routes.run(routineId))
+                },
             )
         }
 
         composable(Routes.ROUTINE_CREATE) {
             val viewModel: RoutineCreateViewModel = hiltViewModel()
             val stockTasks by viewModel.stockTasks.collectAsStateWithLifecycle()
+            // Existing names let the create screen make its suggested name
+            // unique, so a second morning routine becomes "Morning Routine #2".
+            val existingNames by viewModel.existingNames.collectAsStateWithLifecycle()
+            // Drives the create screen's progress overlay while the routine and
+            // its tasks are written.
+            val saving by viewModel.saving.collectAsStateWithLifecycle()
             RoutineCreateScreen(
                 stockTasks = stockTasks,
+                existingNames = existingNames,
+                saving = saving,
                 onSave = { routine, drafts ->
                     viewModel.create(routine, drafts.toPlacedTasks()) { newId ->
                         // Replace the create screen with the new routine's plan so
@@ -157,12 +166,9 @@ fun AppNavHost(openRunRoutineId: Long? = null) {
             )
         }
 
+        // Alarm setup is no longer a destination: it is a section of settings.
         composable(Routes.SETTINGS) {
             SettingsScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(Routes.PERMISSIONS) {
-            PermissionChecklistScreen(onBack = { navController.popBackStack() })
         }
 
         composable(
@@ -173,7 +179,6 @@ fun AppNavHost(openRunRoutineId: Long? = null) {
         ) {
             PlanScreen(
                 onBack = { navController.popBackStack() },
-                onRun = { routineId -> navController.navigate(Routes.run(routineId)) },
             )
         }
 
@@ -221,6 +226,7 @@ private fun List<DraftTask>.toPlacedTasks(): List<PlacedTask> = mapIndexed { ind
         color = draft.color,
         position = index,
         alarmEnabled = draft.alarmEnabled,
+        icon = draft.icon,
     )
 }
 

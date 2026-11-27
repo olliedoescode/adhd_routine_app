@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher mark is the family artwork supplied as
+  images/1-baby-with-adult-app-icon.png. Its transparent birds are trimmed,
+  centred in the foreground layer (see the generated
+  mipmap-*/ic_launcher_foreground.png) and drawn over the solid #2F5038 green
+  background. Keeping the artwork in the foreground lets the launcher's mask
+  trim the green rather than the bird.
+-->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <background android:drawable="@color/launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
 </adaptive-icon>

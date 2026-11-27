@@ -1,4 +1,8 @@
-package com.adhd.routineplanner.ui.plan
+package com.adhd.routineplanner.ui.plan.archive
+
+// ARCHIVED. The edit-mode grid was retired in favour of the timeline editor
+// (see TaskListEditor). It is kept here for reference and is not wired into the
+// app. The run page's own grid (ui/run/RunGrid.kt) is separate and untouched.
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -34,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import com.adhd.routineplanner.domain.Grid
 import com.adhd.routineplanner.domain.Routine
 import com.adhd.routineplanner.domain.Schedule
+import com.adhd.routineplanner.ui.plan.GridTask
 import com.adhd.routineplanner.ui.theme.AdhdRoutineAppTheme
 import com.adhd.routineplanner.ui.theme.Background
 import com.adhd.routineplanner.ui.theme.GridLine
@@ -54,7 +59,12 @@ private val CellBorderWidth: Dp = 0.5.dp
 /** Corner radius of a task block's true start and end (spec §14.4). */
 private val BlockCornerRadius: Dp = 4.dp
 
-/** Extra faint rows drawn after the last task so a drop at the end is possible. */
+/**
+ * Extra canvas height kept after the routine's last minute so a task can still
+ * be dropped past the end in the editor. These rows are *not* drawn as cells —
+ * they are invisible drop space only, so the grid never shows time beyond the
+ * routine's declared end.
+ */
 private const val TAIL_ROWS: Int = 2
 
 /** Fill for cells that hold no task. */
@@ -140,6 +150,8 @@ fun GridCanvas(
         Schedule.startMinutes(window, placed)
     }
     val contentRows = remember(totalMinutes, cols) { Grid.rowsFor(totalMinutes, cols) }
+    // The canvas is taller than the content so a drop past the end is possible,
+    // but only `contentRows` are ever painted. `rows` is the canvas height.
     val rows = contentRows + TAIL_ROWS
 
     val borderPx = with(density) { CellBorderWidth.toPx() }
@@ -161,9 +173,11 @@ fun GridCanvas(
         val gridWidth = size.width - gutterPx
         if (gridWidth <= 0f || cellPx <= 0f || cols <= 0) return@Canvas
 
-        // Only draw rows that intersect the viewport (spec §14.6).
+        // Only draw rows that intersect the viewport (spec §14.6), and never
+        // past the routine's own last row — the tail rows are invisible drop
+        // space, not part of the grid.
         val firstRow = max(0, (visibleTopPx / cellPx).toInt() - 1)
-        val lastRow = min(rows - 1, ceil(visibleBottomPx / cellPx).toInt() + 1)
+        val lastRow = min(contentRows - 1, ceil(visibleBottomPx / cellPx).toInt() + 1)
 
         // --- Layer 1: background -------------------------------------------
         drawRect(color = Background, size = size)
@@ -728,7 +742,7 @@ private fun previewTasks(): List<GridTask> = listOf(
     GridTask(id = 6, minutes = 15, position = 5, name = "Free time", color = 0xFF8E9AAF.toInt()),
 )
 
-@Preview(name = "Grid 10 cols", showBackground = true, backgroundColor = 0xFF0E0F12, widthDp = 400, heightDp = 320)
+@Preview(name = "Grid 10 cols", showBackground = true, backgroundColor = 0xFF0A1116, widthDp = 400, heightDp = 320)
 @Composable
 fun GridCanvasPreview10() {
     AdhdRoutineAppTheme {
@@ -745,7 +759,7 @@ fun GridCanvasPreview10() {
     }
 }
 
-@Preview(name = "Grid 5 cols", showBackground = true, backgroundColor = 0xFF0E0F12, widthDp = 400, heightDp = 420)
+@Preview(name = "Grid 5 cols", showBackground = true, backgroundColor = 0xFF0A1116, widthDp = 400, heightDp = 420)
 @Composable
 fun GridCanvasPreview5() {
     AdhdRoutineAppTheme {
@@ -762,7 +776,7 @@ fun GridCanvasPreview5() {
     }
 }
 
-@Preview(name = "Grid with selection", showBackground = true, backgroundColor = 0xFF0E0F12, widthDp = 400, heightDp = 320)
+@Preview(name = "Grid with selection", showBackground = true, backgroundColor = 0xFF0A1116, widthDp = 400, heightDp = 320)
 @Composable
 fun GridCanvasPreviewSelected() {
     AdhdRoutineAppTheme {

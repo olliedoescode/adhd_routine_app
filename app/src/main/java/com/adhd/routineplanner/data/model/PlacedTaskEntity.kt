@@ -4,6 +4,7 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.adhd.routineplanner.domain.IconKeys
 import com.adhd.routineplanner.domain.PlacedTask
 
 /**
@@ -44,6 +45,14 @@ data class PlacedTaskEntity(
      * so existing tasks stay silent, matching how they behaved before.
      */
     val alarmEnabled: Boolean = false,
+    /**
+     * The stock-task icon key this task was created from. Added in schema v6.
+     *
+     * Before v6 the icon was dropped when a stock task became a placed task, so
+     * the run screen and notification had nothing to show. Defaults to the
+     * generic task key so existing tasks keep a sensible icon.
+     */
+    val icon: String = IconKeys.TASK,
 )
 
 /** Maps the persisted entity to the Android-free domain type. */
@@ -55,6 +64,7 @@ fun PlacedTaskEntity.toDomain(): PlacedTask = PlacedTask(
     name = name,
     color = color,
     alarmEnabled = alarmEnabled,
+    icon = icon,
 )
 
 /** Maps the domain type back to the persisted entity. */
@@ -66,4 +76,5 @@ fun PlacedTask.toEntity(): PlacedTaskEntity = PlacedTaskEntity(
     name = name,
     color = color,
     alarmEnabled = alarmEnabled,
+    icon = icon,
 )

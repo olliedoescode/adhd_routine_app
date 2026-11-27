@@ -42,6 +42,18 @@ import com.adhd.routineplanner.data.model.StockTaskEntity
  * 3. The `stock_tasks` table: user-editable reusable tasks that the add-task
  *    picker offers. The table starts empty and is seeded by
  *    `StockTaskRepository.seedDefaultsIfEmpty()`.
+ *
+ * Version 6 adds `PlacedTaskEntity.icon`, the stock-task icon key the task was
+ * created from. Before v6 the icon was dropped when a stock task was placed into
+ * a routine, so the run screen and the ongoing notification had nothing to show.
+ * It defaults to `'task'`, the generic key, so existing tasks keep a sensible
+ * icon rather than a blank one.
+ *
+ * Version 7 adds `RoutineEntity.isUntimed` and `RoutineEntity.allowPause`:
+ * routines with no start time, day or date that are simply run on demand, and
+ * the per-routine switch that decides whether a run may be paused. Both default
+ * to `0`, so every existing routine stays a scheduled routine with no pause
+ * control, exactly as before.
  */
 @Database(
     entities = [
@@ -49,7 +61,7 @@ import com.adhd.routineplanner.data.model.StockTaskEntity
         PlacedTaskEntity::class,
         StockTaskEntity::class,
     ],
-    version = 5,
+    version = 7,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -136,6 +148,39 @@ abstract class AppDatabase : RoomDatabase() {
                         position INTEGER NOT NULL
                     )
                     """.trimIndent(),
+                )
+            }
+        }
+
+        /**
+         * v5 -> v6: persist the stock-task icon on each placed task.
+         *
+         * A plain additive column with a default, so no table rebuild is needed.
+         * Existing tasks get the generic `'task'` key, which is what the UI
+         * already fell back to when no icon was known.
+         */
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE placed_tasks ADD COLUMN icon TEXT NOT NULL DEFAULT 'task'",
+                )
+            }
+        }
+
+        /**
+         * v6 -> v7: on-demand routines and the per-routine pause switch.
+         *
+         * Both are plain additive columns with a `0` default, which is the
+         * existing behaviour: a routine is scheduled and cannot be paused. No
+         * table rebuild, and no existing routine changes meaning.
+         */
+        val MIGRATION_6_7: Migration = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE routines ADD COLUMN isUntimed INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL(
+                    "ALTER TABLE routines ADD COLUMN allowPause INTEGER NOT NULL DEFAULT 0",
                 )
             }
         }

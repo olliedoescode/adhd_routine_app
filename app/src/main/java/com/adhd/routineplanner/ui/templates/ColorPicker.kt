@@ -171,7 +171,7 @@ private fun hsvOf(color: Color): Hsv {
     return Hsv(hue = hsv[0], saturation = saturation, value = value)
 }
 
-@Preview(name = "Colour picker", showBackground = true, backgroundColor = 0xFF0E0F12)
+@Preview(name = "Colour picker", showBackground = true, backgroundColor = 0xFF0A1116)
 @Composable
 private fun ColorPickerPreview() {
     AdhdRoutineAppTheme {

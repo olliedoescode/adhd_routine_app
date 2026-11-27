@@ -42,9 +42,37 @@ data class Routine(
      * the value sorts and compares as a plain string.
      */
     val scheduledDate: String? = null,
+    /**
+     * True for a routine with no temporal connection at all: no start time, no
+     * day and no date. You just open it and run it whenever you like.
+     *
+     * The window is still stored as `0 .. endMinuteOfDay` so the rest of the
+     * app — [Buffer] partitioning, [Schedule], [RunState] — keeps working
+     * unchanged: an untimed routine simply behaves like a routine that starts
+     * at midnight and lasts [capacityMinutes]. What is different is everything
+     * *around* the window: it is never scheduled, so it gets no alarms and no
+     * "starts in" countdown, and the routine list gives it a Run button instead.
+     */
+    val isUntimed: Boolean = false,
+    /**
+     * Whether the run screen offers Pause/Resume for this routine. Per-routine
+     * because some routines (a wind-down, a workout) are fine to interrupt and
+     * others (a 10-minute tidy) are better without the option.
+     */
+    val allowPause: Boolean = false,
 ) {
     /** True when this routine repeats weekly rather than running once. */
     val isRecurring: Boolean get() = scheduledDate == null
+
+    /**
+     * The window length of an untimed routine, clamped to a sane minute value.
+     *
+     * Untimed routines reuse [endMinuteOfDay] as their duration (with a zero
+     * start), so this is simply a guarded read of it: a duration of 0 or a full
+     * day would make the grid meaningless.
+     */
+    val untimedDurationMinutes: Int
+        get() = endMinuteOfDay.coerceIn(1, Schedule.MINUTES_PER_DAY - 1)
     /**
      * Length of the routine window in minutes, wrapping at midnight so a
      * routine that crosses 00:00 still reports a positive length.

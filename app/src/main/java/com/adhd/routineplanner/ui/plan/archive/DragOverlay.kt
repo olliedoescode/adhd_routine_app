@@ -1,4 +1,7 @@
-package com.adhd.routineplanner.ui.plan
+package com.adhd.routineplanner.ui.plan.archive
+
+// ARCHIVED with the edit-mode grid: the drag ghost belonged to the grid's
+// free-position drag. The timeline uses its own live reorder instead.
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -23,6 +26,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.adhd.routineplanner.ui.plan.GridTask
 import kotlin.math.roundToInt
 
 /** How far above the finger the ghost floats so the finger does not hide it. */

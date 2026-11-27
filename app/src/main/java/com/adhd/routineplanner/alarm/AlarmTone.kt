@@ -78,9 +78,16 @@ object AlarmTone {
     }
 
     /**
-     * Plays [settings]' tone once, at the configured volume, for the configured
-     * duration. Returns the player so the caller can stop it early (the alarm
-     * screen does this on Dismiss and on destroy).
+     * Plays [settings]' tone at the configured volume, **looping until stopped**.
+     * Returns the player so the caller can stop it (the alarm screen does this
+     * on Snooze, on Dismiss and on destroy).
+     *
+     * Looping is what makes this feel like a real alarm rather than a chime: a
+     * five-second tone that then falls silent is easy to sleep through, whereas
+     * one that keeps ringing forces the user to pick Snooze or Dismiss. The
+     * caller is responsible for stopping it — [com.adhd.routineplanner.alarm.AlarmActivity]
+     * does so from its buttons and from `onDestroy`, so the tone can never
+     * outlive the screen.
      *
      * Volume is applied to the alarm stream itself rather than to the player,
      * because `MediaPlayer.setVolume` is relative to the stream and would be
@@ -102,7 +109,8 @@ object AlarmTone {
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                     .build(),
             )
-            player.isLooping = false
+            // Loop until the alarm screen stops us: a real alarm keeps ringing.
+            player.isLooping = true
             player.prepare()
             player.start()
             player
@@ -137,18 +145,22 @@ object AlarmTone {
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
             ?: return null
 
+        // A preview must be heard even when the alarm stream is turned down or
+        // muted (a user auditioning tones in a quiet room often has it low).
+        // Play it on the media stream instead, which is the stream a settings
+        // preview is expected to use, and leave the alarm stream untouched.
         val player = MediaPlayer()
         return try {
             player.setDataSource(context, target)
             player.setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                     .build(),
             )
             player.isLooping = false
             // Quiet on purpose: a preview is a "what does this sound like",
-            // not an alarm. 0.35 is clearly audible without being startling.
+            // not an alarm. 0.6 is clearly audible without being startling.
             player.setVolume(PREVIEW_VOLUME, PREVIEW_VOLUME)
             player.prepare()
             player.start()
@@ -172,5 +184,13 @@ object AlarmTone {
     }
 
     /** Player volume for [preview]: audible, but well below an alarm. */
-    private const val PREVIEW_VOLUME: Float = 0.35f
+    private const val PREVIEW_VOLUME: Float = 0.6f
+
+    /**
+     * How long a preview plays before it is stopped, in milliseconds.
+     *
+     * A preview is a "what does this sound like", not a listen-through, so it
+     * is capped at three seconds. The caller schedules [stop] after this delay.
+     */
+    const val PREVIEW_MAX_MS: Long = 3_000L
 }

@@ -27,9 +27,16 @@ interface RoutineDao {
     @Query("SELECT * FROM routines")
     suspend fun getAll(): List<RoutineEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(routine: RoutineEntity): Long
+    /**
+     * Inserts a brand-new routine. Deliberately *not* the same call used for
+     * saving edits: `INSERT OR REPLACE` is a DELETE followed by an INSERT in
+     * SQLite, and `placed_tasks` has `ON DELETE CASCADE`, so replacing a routine
+     * row silently deletes every task it owns.
+     */
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(routine: RoutineEntity): Long
 
+    /** Updates an existing routine in place, leaving its tasks untouched. */
     @Update
     suspend fun update(routine: RoutineEntity)
 
